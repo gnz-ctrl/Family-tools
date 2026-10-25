@@ -306,3 +306,13 @@ a.btn { text-decoration: none; display: inline-block; }
 .doc-list .when { margin-left: 0; }
 .doc-list .doc-act { display: inline-flex; gap: 12px; margin-left: auto; }
 @media (max-width: 520px) { .doc-list .when { flex-basis: 100%; padding-left: 44px; } }
+
+/* Alertas plegables solo en móvil (en escritorio siempre abiertas) */
+button.alerts-head { width: 100%; text-align: left; cursor: default; }
+.alerts-head .chev { display: none; margin-left: auto; color: var(--faint); transition: transform .15s; }
+@media (max-width: 900px) {
+  button.alerts-head { cursor: pointer; }
+  .alerts-head .chev { display: inline; }
+  .alerts-card.collapsed .chev { transform: rotate(-90deg); }
+  .alerts-card.collapsed #alert-list, .alerts-card.collapsed #alert-more { display: none; }
+}

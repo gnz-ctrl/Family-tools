@@ -643,6 +643,13 @@ $("booked").addEventListener("click", async () => {
   goStep(4);
 });
 
+/* ---------- alertas plegables en móvil (cada sesión empieza desplegada) ---------- */
+$("alerts-toggle").addEventListener("click", () => {
+  if (!matchMedia("(max-width: 900px)").matches) return;
+  const c = $("alerts").classList.toggle("collapsed");
+  $("alerts-toggle").setAttribute("aria-expanded", String(!c));
+});
+
 /* ---------- inicio ---------- */
 renderTravelers();
 (async () => {
