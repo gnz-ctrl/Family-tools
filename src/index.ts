@@ -6,6 +6,21 @@ import type { Env, Topic } from "./types";
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 
+/** Traduce los fallos más comunes a un mensaje que se pueda arreglar. */
+function explainError(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg.startsWith("Claude API")) {
+    if (/credit balance|billing/i.test(msg)) return "La cuenta de la API de Claude no tiene crédito. Añade saldo en console.anthropic.com → Billing.";
+    if (/ 401/.test(msg)) return "La clave de la API de Claude no es válida. Revisa ANTHROPIC_API_KEY en Cloudflare.";
+    if (/ 404/.test(msg) && /model/i.test(msg)) return "El modelo configurado no existe en tu cuenta de la API (CLAUDE_MODEL). " + msg.slice(0, 300);
+    if (/ 429/.test(msg)) return "Límite de uso de la API de Claude alcanzado. Prueba en un minuto.";
+    return msg.slice(0, 400);
+  }
+  if (/no such table|D1_ERROR/i.test(msg)) return "Problema con la base de datos: " + msg.slice(0, 300);
+  if (/ANTHROPIC_API_KEY|x-api-key/i.test(msg)) return "Falta la clave ANTHROPIC_API_KEY en Cloudflare.";
+  return "Error interno: " + msg.slice(0, 300);
+}
+
 const today = () => new Date().toISOString().slice(0, 10);
 
 async function getTopics(env: Env): Promise<Topic[]> {
@@ -120,7 +135,8 @@ export default {
         return await handleApi(req, env, user);
       } catch (e) {
         console.error(e);
-        return json({ error: "Error interno" }, 500);
+        // Solo los usuarios autorizados llegan aquí, así que les mostramos el motivo real.
+        return json({ error: explainError(e) }, 500);
       }
     }
     return env.ASSETS.fetch(req);

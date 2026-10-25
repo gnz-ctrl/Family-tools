@@ -31,3 +31,7 @@ ACCESS_AUD = "7da86e38c5ebeadfd4b00fe8480324814d4cd7a06c055d319576ca987c9ae16c"
 # Resumen semanal: domingos 07:00 UTC (fase 2)
 [triggers]
 crons = ["0 7 * * SUN"]
+
+# Registros visibles en Cloudflare → family-tools → Logs
+[observability]
+enabled = true

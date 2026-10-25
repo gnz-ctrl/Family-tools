@@ -3,6 +3,7 @@ import type { Classification, Env, Topic } from "./types";
 const API = "https://api.anthropic.com/v1/messages";
 
 async function callClaude(env: Env, body: Record<string, unknown>) {
+  if (!env.ANTHROPIC_API_KEY) throw new Error("Falta ANTHROPIC_API_KEY en Cloudflare (Settings → Variables and Secrets).");
   const res = await fetch(API, {
     method: "POST",
     headers: {
