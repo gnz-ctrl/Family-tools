@@ -69,8 +69,10 @@ function dueBadge(d) {
   if (n <= 7) return `<span class="badge warn">${fmt(d)}</span>`;
   return `<span class="badge">${fmt(d)}</span>`;
 }
-const fold = (key, summary, body) => `<details class="fold" data-fold="${key}" ${uiOpen[key] ? "open" : ""}>
+const fold = (key, summary, body, defOpen = false, id = "") => `<details class="fold" data-fold="${key}" ${id ? `id="${id}"` : ""} ${(uiOpen[key] ?? defOpen) ? "open" : ""}>
   <summary>${summary}<span class="chev" aria-hidden="true">▾</span></summary><div class="fold-body">${body}</div></details>`;
+const foldTitle = (title, meta = "") => `<span class="fold-title">${title}</span>${meta ? `<span class="fold-meta">${meta}</span>` : ""}`;
+let pendingTaskDel = null, creatingTopic = false, editingTopic = null, deletingTopic = null;
 
 /* =========================================================
    PORTADA
@@ -84,13 +86,14 @@ function renderAll() {
     <label class="tt" for="cb-${t.id}">${esc(t.title)}</label>
     <span class="tm">${esc(tName(t.topic_id))}</span>
     <span class="tw">${esc(userName(t.status === "done" ? t.completed_by : t.assignee))}</span>
-    <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span></li>`;
+    <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span>
+    ${pendingTaskDel === t.id ? `<button class="tdel on" type="button" data-task-del-ok="${t.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${t.id}" aria-label="Borrar tarea" title="Borrar tarea">×</button>`}</li>`;
   $("open-list").innerHTML = open.map(row).join("") || `<li class="empty">Nada pendiente.</li>`;
   $("done-list").innerHTML = done.map(row).join("");
   $("done-sum").textContent = `Hechas (${S.tasks.length - open.length})`;
   $("ov-count").textContent = open.length;
 
-  $("groups").innerHTML = `<div class="cards">${S.topics.map((t) => {
+  $("groups").innerHTML = `<div class="cards topics-grid">${S.topics.map((t) => {
     const n = open.filter((x) => x.topic_id === t.id).length;
     const m = S.mails.filter((x) => x.topic_id === t.id && x.state === "new").length;
     if (t.slug === "documentos") {
@@ -105,7 +108,16 @@ function renderAll() {
     ].join("");
     return `<button type="button" class="card topic" data-topic="${t.slug}">
       <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${badges}</div></button>`;
-  }).join("")}</div>`;
+  }).join("")}${creatingTopic
+    ? `<form class="card topic new-topic" id="new-topic"><input type="text" id="nt-name" placeholder="Nombre del tema" aria-label="Nombre del tema" maxlength="60"><div class="actions"><button class="btn" type="submit">Crear</button><button class="link" type="button" id="nt-cancel">Cancelar</button></div></form>`
+    : `<button type="button" class="card topic new-topic" id="nt-open"><h3 style="margin:0">+ Nuevo tema</h3></button>`}</div>`;
+  $("nt-open")?.addEventListener("click", () => { creatingTopic = true; renderAll(); $("nt-name").focus(); });
+  $("nt-cancel")?.addEventListener("click", () => { creatingTopic = false; renderAll(); });
+  $("new-topic")?.addEventListener("submit", (e) => {
+    e.preventDefault(); const name = $("nt-name").value.trim(); if (!name) return;
+    creatingTopic = false;
+    act(() => post("/api/topics", { name }), `Tema «${name}» creado.`).then((r) => r?.slug && openTopic(r.slug)).catch(() => {});
+  });
 
   renderCalendar();
   renderAlerts();
@@ -174,32 +186,42 @@ function renderTopic(slug) {
     !newM && !v.open.length ? `<span class="badge">Al día</span>` : "",
   ].join("");
   const empty = (txt) => `<p class="note-sim">${txt}</p>`;
-  const kv = (rows) => `<dl class="kv">${rows.map((r) => `<dt>${esc(r.label)}</dt><dd>${esc(r.value)}</dd>`).join("")}</dl>`;
+  const itemList = (rows) => rows.length ? `<ul class="kv-list">${rows.map((r) => `<li><span class="k">${esc(r.label)}</span><span class="v">${esc(r.value)}</span><button class="tdel" type="button" data-item-del="${r.id}" aria-label="Quitar" title="Quitar">×</button></li>`).join("")}</ul>` : "";
+  const itemForm = (kind, ph1, ph2) => `<form class="item-form" data-item-form="${kind}"><input type="text" name="label" placeholder="${ph1}" aria-label="${ph1}"><input type="text" name="value" placeholder="${ph2}" aria-label="${ph2}"><button class="btn light" type="submit">Añadir</button></form>`;
+  const pendingEv = v.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0).length;
+
+  const head = editingTopic === slug
+    ? `<form class="card edit-topic" id="edit-topic">
+        <label for="et-name">Nombre<input type="text" id="et-name" value="${esc(t.name)}" maxlength="60"></label>
+        <label for="et-status">Estado actual<textarea id="et-status" rows="2">${esc(t.status_summary || "")}</textarea></label>
+        <label for="et-next">Próximo paso<input type="text" id="et-next" value="${esc(t.next_step || "")}"></label>
+        <div class="fields"><label for="et-to">Email habitual del destinatario<input type="email" id="et-to" value="${esc(t.email_to || "")}"></label>
+        <label for="et-lang">Idioma de los emails<select id="et-lang">${Object.entries(LANGS).map(([k, l]) => `<option value="${k}" ${(t.email_lang || "de") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+        <div class="actions"><button class="btn" type="submit">Guardar</button><button class="link" type="button" id="et-cancel">Cancelar</button>
+          <span style="margin-left:auto">${deletingTopic === slug
+            ? `<span class="note-sim">Se borran sus datos, historial, correos y eventos; las tareas quedan sin tema.</span> <button class="link danger" type="button" id="et-del-ok">Sí, borrar el tema</button> <button class="link" type="button" id="et-del-no">No</button>`
+            : `<button class="link danger" type="button" id="et-del">Borrar tema</button>`}</span></div>
+      </form>`
+    : `<div class="callout"><b>Estado actual:</b> ${esc(t.status_summary || "Todavía no hay nada guardado en este tema.")}${t.next_step ? `<br><b>Próximo paso:</b> ${esc(t.next_step)}` : ""}</div>`;
 
   $("topic-detail").innerHTML = `
-    <div class="topic-head"><div><h2>${esc(t.name)}</h2></div><div class="badges">${badges}</div></div>
-    <div class="callout"><b>Estado actual:</b> ${esc(t.status_summary || "Todavía no hay nada guardado en este tema.")}${t.next_step ? `<br><b>Próximo paso:</b> ${esc(t.next_step)}` : ""}</div>
+    <div class="topic-head"><div><h2>${esc(t.name)}</h2></div><div class="badges">${badges}${editingTopic === slug ? "" : `<button class="link" type="button" id="et-open">Editar</button>`}</div></div>
+    ${head}
     <div class="full">
-      ${fold("facts-" + slug, `<span class="fold-title">Datos clave</span>`, v.facts.length ? kv(v.facts) : empty("Cuando llegue algo sobre este tema, aquí aparecerán números de contrato, importes y fechas."))}
-      ${slug === "finanzas" ? dashboardHTML() : ""}
-      ${slug === "viajes" ? `<div id="trip-slot"></div>` : ""}
+      ${fold("tasks-" + slug, foldTitle("Pendientes", v.open.length ? String(v.open.length) : ""), (v.open.length ? v.open.map((x) => `<div class="mini-task">
+          <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
+          <div class="grow">${esc(x.title)}<div class="foot">${esc(userName(x.assignee))}</div></div>${dueBadge(x.due_date)}
+          ${pendingTaskDel === x.id ? `<button class="tdel on" type="button" data-task-del-ok="${x.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${x.id}" aria-label="Borrar tarea">×</button>`}</div>`).join("") : empty("No hay nada pendiente en este tema."))
+        + `<form class="item-form" id="add-task"><input type="text" id="at-title" placeholder="Nueva tarea" aria-label="Nueva tarea"><input type="date" id="at-due" aria-label="Fecha límite"><button class="btn light" type="submit">Añadir</button></form>`, true)}
       ${mailsHTML(v.mails)}
-      ${v.events.length ? eventsHTML(v.events) : ""}
-    </div>
-    <div class="detail">
-      <div class="col">
-        <div class="card"><h4>Pendientes</h4>${v.open.length ? v.open.map((x) => `<div class="mini-task">
-            <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
-            <div class="grow">${esc(x.title)}<div class="foot">${esc(userName(x.assignee))}</div></div>${dueBadge(x.due_date)}</div>`).join("") : empty("No hay nada pendiente en este tema.")}</div>
-        ${composerHTML(slug)}
-      </div>
-      <div class="col">
-        <div class="card"><h4>Historial</h4>
-          <form class="note-form" id="note-form"><input type="text" id="note-text" placeholder="Añadir una nota" aria-label="Nota"><button class="btn" type="submit">Guardar</button></form>
-          ${v.history.length ? `<ul class="timeline">${v.history.slice(0, 20).map((h) => `<li><time>${esc(fmt(h.at))}</time><div>${esc(h.text)}<div class="src">vía ${esc(h.source)}</div></div></li>`).join("")}</ul>` : empty("Todavía no hay historial.")}</div>
-        <div class="card"><h4>Documentos</h4>${v.docs.length ? `<ul class="files">${v.docs.map((d) => `<li><span class="ext">${esc(d.value || "DOC")}</span><span>${esc(d.label)}</span><span class="when">${esc(d.extra || "")}</span></li>`).join("")}</ul>` : empty("Sin documentos todavía.")}</div>
-        <div class="card"><h4>Contactos</h4>${v.contacts.length ? kv(v.contacts) : empty("Sin contactos guardados.")}</div>
-      </div>
+      ${fold("events-" + slug, foldTitle("Eventos", pendingEv ? `<span style="color:var(--warn)">${pendingEv} por decidir</span>` : v.events.length ? String(v.events.length) : ""), eventsBody(slug, v.events))}
+      ${slug === "finanzas" ? dashboardHTML() : ""}
+      ${slug === "viajes" ? fold("trip", foldTitle("Planear un viaje"), `<div id="trip-slot"></div>`) : ""}
+      ${fold("facts-" + slug, foldTitle("Datos clave"), itemList(v.facts) + itemForm("fact", "Dato (p. ej. Nº de cliente)", "Valor"))}
+      ${composerHTML(slug)}
+      ${fold("hist-" + slug, foldTitle("Historial"), `<form class="note-form" id="note-form"><input type="text" id="note-text" placeholder="Añadir una nota (pasa a ser el estado actual)" aria-label="Nota"><button class="btn" type="submit">Guardar</button></form>
+          ${v.history.length ? `<ul class="timeline">${v.history.slice(0, 30).map((h) => `<li><time>${esc(fmt(h.at))}</time><div>${esc(h.text)}<div class="src">vía ${esc(h.source)}</div></div></li>`).join("")}</ul>` : empty("Todavía no hay historial.")}`)}
+      ${fold("contacts-" + slug, foldTitle("Contactos"), itemList(v.contacts) + itemForm("contact", "Quién (p. ej. Secretaría)", "Email o teléfono"))}
     </div>`;
 
   if (slug === "viajes") $("trip-slot").appendChild(tripPanel);
@@ -279,26 +301,32 @@ function mailsHTML(mails) {
       </div></div>`).join(""));
 }
 
-/* ---------- eventos (colegio y otros) ---------- */
-function eventsHTML(events) {
+/* ---------- eventos ---------- */
+function eventsBody(slug, events) {
   const evs = [...events].sort((a, b) => (a.date < b.date ? -1 : 1));
-  return `<div class="card" id="events"><div class="card-top"><h4>Eventos</h4><span class="badge mute">Sacados de los correos</span></div>
-    <div class="cards">${evs.map((ev) => `<div class="card" style="background:var(--bg)">
+  return `<div id="events" style="display:grid;gap:12px">${evs.length ? `<div class="cards">${evs.map((ev) => `<div class="card" style="background:var(--bg)">
       <div class="card-top"><div class="avatar">${D(ev.date).getDate()}</div>${ev.in_calendar ? `<span class="badge">En el calendario</span>` : dueBadge(ev.date)}</div>
       <h3>${esc(ev.title)}</h3>
       <p>${esc(fmtLong(ev.date))}${ev.time ? ` · ${esc(ev.time)}` : ""}${ev.who || ev.place ? `<br>${esc([ev.who, ev.place].filter(Boolean).join(" · "))}` : ""}${ev.note ? `<br><b style="color:var(--fg)">${esc(ev.note)}</b>` : ""}</p>
       ${ev.in_calendar
-        ? `<span class="note-ok">✓ En el calendario${ev.attendee ? ` · ${ATTEND_TXT[ev.attendee]}` : ""}</span><button class="link" type="button" data-ev-undo="${ev.id}" style="justify-self:start">Quitar del calendario</button>`
+        ? `<span class="note-ok">✓ En el calendario${ev.attendee ? ` · ${ATTEND_TXT[ev.attendee]}` : ""}</span><span class="actions"><button class="link" type="button" data-ev-undo="${ev.id}">Quitar del calendario</button><button class="link danger" type="button" data-ev-del="${ev.id}">Borrar</button></span>`
         : `<label for="att-${ev.id}">¿Quién va?<select id="att-${ev.id}" data-ev-att="${ev.id}">${Object.entries(ATTEND).map(([k, l]) => `<option value="${k}" ${(ev.attendee || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-           <button class="btn" type="button" data-ev-send="${ev.id}" ${ev.attendee ? "" : "disabled"} style="justify-self:start">Añadir al calendario</button>`}
-    </div>`).join("")}</div></div>`;
+           <span class="actions"><button class="btn" type="button" data-ev-send="${ev.id}" ${ev.attendee ? "" : "disabled"}>Añadir al calendario</button><button class="link danger" type="button" data-ev-del="${ev.id}">Borrar</button></span>`}
+    </div>`).join("")}</div>` : `<p class="note-sim">Sin eventos. Llegan solos de los correos reenviados a inbox@, o añádelos aquí.</p>`}
+    <form class="ev-form" id="add-event">
+      <input type="text" id="ae-title" placeholder="Evento (p. ej. Cumpleaños de la abuela)" aria-label="Evento">
+      <input type="date" id="ae-date" aria-label="Fecha">
+      <input type="text" id="ae-time" placeholder="Hora" aria-label="Hora">
+      <input type="text" id="ae-place" placeholder="Lugar" aria-label="Lugar">
+      <button class="btn light" type="submit">Añadir</button>
+    </form></div>`;
 }
 
 /* ---------- gastos y suscripciones (Finanzas) ---------- */
 const perMonth = (e) => (e.cycle === "mes" ? e.amount : e.cycle === "año" ? e.amount / 12 : e.amount / 3);
 function dashboardHTML() {
   const E = S.expenses;
-  if (!E.length) return fold("subs", `<span class="fold-title">Suscripciones</span>`, subsBody([]));
+  if (!E.length) return fold("gastos", foldTitle("Gastos fijos y suscripciones", "vacío"), `<p class="note-sim">Añade alquiler, seguros, suscripciones… y aquí verás cuánto gastáis al mes y al año.</p>${expenseForm()}`);
   const fixedM = E.filter((e) => !e.sub).reduce((s, e) => s + perMonth(e), 0);
   const subs = E.filter((e) => e.sub);
   const subsM = subs.reduce((s, e) => s + perMonth(e), 0);
@@ -317,11 +345,11 @@ function dashboardHTML() {
     <div class="bars">${Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => `
       <div class="bar-row"><span>${esc(c)}</span><div class="bar-track"><div class="bar-fill" style="width:${((v / max) * 100).toFixed(1)}%"></div></div><span class="amt">${eur(v)}</span></div>`).join("")}</div>
     <h4>Todos los cargos</h4>
-    <div class="table-wrap"><table class="subs"><thead><tr><th>Concepto</th><th class="num">Importe</th><th class="num">Al mes</th><th>Próximo cargo</th><th>Cancelación</th></tr></thead><tbody>
+    <div class="table-wrap"><table class="subs"><thead><tr><th>Concepto</th><th class="num">Importe</th><th class="num">Al mes</th><th>Próximo cargo</th><th>Cancelación</th><th></th></tr></thead><tbody>
       ${rows.map((e) => `<tr><td>${esc(e.name)}<div class="sub">${esc(e.cat)}${e.sub ? " · suscripción" : ""}</div></td>
         <td class="num">${eur(e.amount)}<div class="sub">/${e.cycle}</div></td><td class="num">${eur(perMonth(e))}</td>
-        <td>${e.next ? fmt(e.next) : "—"}</td><td>${esc(e.notice || "")}</td></tr>`).join("")}
-    </tbody></table></div>`)
+        <td>${e.next ? fmt(e.next) : "—"}</td><td>${esc(e.notice || "")}</td><td><button class="tdel" type="button" data-sub-del="${e.id}" aria-label="Quitar ${esc(e.name)}" title="Quitar">×</button></td></tr>`).join("")}
+    </tbody></table></div>${expenseForm()}`)
   + fold("subs", `<span class="fold-title">Suscripciones</span><span class="fold-meta">${subs.length} · ${eur(subsM)} al mes${flagged ? ` · <span style="color:var(--warn)">${flagged} por revisar</span>` : ""}</span>`, subsBody(subs));
 }
 function subsBody(subs) {
@@ -330,14 +358,19 @@ function subsBody(subs) {
         ${e.flag ? `<span class="sl-flag">${esc(e.flag)}</span>` : ""}</div>
       <div class="sl-act"><button class="link" type="button" data-cancel="${esc(e.name)}">Email de baja</button><button class="link danger" type="button" data-sub-del="${e.id}">Quitar</button></div>
     </li>`).join("") || `<li><span class="note-sim">No hay suscripciones.</span></li>`}</ul>
-    <form class="sub-form" id="sub-form">
-      <h4>Añadir suscripción</h4>
+`;
+}
+function expenseForm() {
+  return `<form class="sub-form" id="sub-form">
+      <h4>Añadir gasto o suscripción</h4>
       <div class="fields">
-        <label for="sf-name">Nombre<input type="text" id="sf-name" placeholder="p. ej. Streaming deportes" required></label>
+        <label for="sf-kind">Tipo<select id="sf-kind"><option value="sub">Suscripción</option><option value="fijo">Gasto fijo</option></select></label>
+        <label for="sf-name">Nombre<input type="text" id="sf-name" placeholder="p. ej. Seguro de hogar" required></label>
         <label for="sf-amount">Importe (€)<input type="text" id="sf-amount" inputmode="decimal" placeholder="9,99" required></label>
         <label for="sf-cycle">Se cobra<select id="sf-cycle"><option value="mes">Cada mes</option><option value="trimestre">Cada trimestre</option><option value="año">Cada año</option></select></label>
+        <label for="sf-cat">Categoría (gasto fijo)<select id="sf-cat">${["Vivienda", "Seguros", "Transporte", "Comunicaciones", "Niños", "Otros"].map((c) => `<option>${c}</option>`).join("")}</select></label>
         <label for="sf-next">Próximo cargo<input type="date" id="sf-next" value="${addDays(30)}"></label>
-        <label for="sf-notice">Cancelación<input type="text" id="sf-notice" placeholder="En cualquier momento"></label>
+        <label for="sf-notice">Plazo de cancelación<input type="text" id="sf-notice" placeholder="p. ej. 1 mes"></label>
       </div>
       <div class="actions"><button class="btn" type="submit">Añadir</button></div>
     </form>`;
@@ -368,15 +401,16 @@ function composerHTML(slug) {
         : `<div class="actions"><a class="btn" id="c-mailto" href="${mailto}">Abrir en el correo</a><button class="btn light" type="button" data-act="copy">Copiar</button><button class="btn light" type="button" data-act="mark">Marcar como enviado</button><button class="link danger" type="button" data-act="discard">Descartar</button></div>`}
     </div>`;
   }
-  return `<div class="card" id="composer"><h4>Escribir un email</h4>
-    <p>Para resolver este tema, en el idioma que quieras. Déjalo en blanco y Claude propone uno a partir del próximo paso.</p>
+  return fold("mail-" + slug, foldTitle("Escribir un email", dr?.stage === "draft" || dr?.stage === "confirm" ? "borrador abierto" : ""), `
+    <p class="note-sim">Para resolver este tema, en el idioma que quieras. Déjalo en blanco y Claude propone uno a partir del próximo paso.</p>
     <form id="c-form" style="display:grid;gap:10px">
       <textarea id="c-req" rows="2" placeholder="¿Qué quieres conseguir?" aria-label="Qué quieres conseguir">${esc(dr && !dr.mailId ? dr.request || "" : "")}</textarea>
       <div class="actions"><select id="c-lang" aria-label="Idioma" style="width:auto">${langOpts(dr?.lang || t.email_lang || "de")}</select><button class="btn" type="submit">Redactar</button></div>
-    </form>${out}</div>`;
+    </form>${out}`, false, "composer");
 }
 async function compose(slug, { request = "", lang, mailId } = {}) {
   drafts[slug] = { stage: "loading", request, lang, mailId };
+  uiOpen["mail-" + slug] = true;
   if (currentTopic === slug) renderTopic(slug);
   try {
     const d = await post("/api/draft", { topic: slug, request, lang, mailId });
@@ -402,6 +436,44 @@ function wireTopic(slug, v) {
     act(() => post(`/api/topics/${slug}/note`, { text }), "Nota guardada.");
   });
 
+  // editar / borrar el tema
+  $("et-open")?.addEventListener("click", () => { editingTopic = slug; deletingTopic = null; renderTopic(slug); });
+  $("et-cancel")?.addEventListener("click", () => { editingTopic = null; deletingTopic = null; renderTopic(slug); });
+  $("et-del")?.addEventListener("click", () => { deletingTopic = slug; renderTopic(slug); });
+  $("et-del-no")?.addEventListener("click", () => { deletingTopic = null; renderTopic(slug); });
+  $("et-del-ok")?.addEventListener("click", async () => {
+    const name = v.t.name; editingTopic = deletingTopic = null;
+    try { await post(`/api/topics/${slug}`, {}, "DELETE"); } catch (e) { return say("⚠ " + e.message, true); }
+    showTab("temas"); await load(); renderAll(); say(`Tema «${name}» borrado.`); window.scrollTo({ top: 0 });
+  });
+  $("edit-topic")?.addEventListener("submit", (e) => {
+    e.preventDefault(); editingTopic = null;
+    act(() => post(`/api/topics/${slug}`, { name: $("et-name").value, status_summary: $("et-status").value, next_step: $("et-next").value, email_to: $("et-to").value, email_lang: $("et-lang").value }, "PATCH"), "Tema guardado.");
+  });
+
+  // datos clave y contactos
+  box.querySelectorAll("[data-item-form]").forEach((f) => f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const label = f.elements.label.value.trim(), value = f.elements.value.value.trim(); if (!label) return;
+    act(() => post(`/api/topics/${slug}/items`, { kind: f.dataset.itemForm, label, value }), "Guardado.");
+  }));
+  box.querySelectorAll("[data-item-del]").forEach((b) => b.addEventListener("click", () => act(() => post(`/api/items/${b.dataset.itemDel}`, {}, "DELETE"), "Quitado.")));
+
+  // nueva tarea dentro del tema
+  $("add-task")?.addEventListener("submit", (e) => {
+    e.preventDefault(); const title = $("at-title").value.trim(); if (!title) return;
+    act(() => post("/api/tasks", { title, topic: slug, due_date: $("at-due").value || null }), "Tarea añadida.");
+  });
+
+  // nuevo evento
+  $("add-event")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const title = $("ae-title").value.trim(), date = $("ae-date").value;
+    if (!title || !date) { say("Escribe el evento y su fecha.", true); return; }
+    uiOpen["events-" + slug] = true;
+    act(() => post(`/api/topics/${slug}/events`, { title, date, time: $("ae-time").value, place: $("ae-place").value }), "Evento añadido. Elige quién va y añádelo al calendario.");
+  });
+
   // correos
   box.querySelectorAll("[data-mail]").forEach((b) => b.addEventListener("click", async () => {
     const id = +b.dataset.m, a = b.dataset.mail;
@@ -419,6 +491,8 @@ function wireTopic(slug, v) {
     const s = e.target.closest("[data-ev-send]"), u = e.target.closest("[data-ev-undo]");
     if (s) act(() => post(`/api/events/${s.dataset.evSend}`, { in_calendar: true }), "Añadido al calendario de los dos.");
     if (u) act(() => post(`/api/events/${u.dataset.evUndo}`, { in_calendar: false }), "Quitado del calendario.");
+    const d = e.target.closest("[data-ev-del]");
+    if (d) act(() => post(`/api/events/${d.dataset.evDel}`, {}, "DELETE"), "Evento borrado.");
   });
 
   // suscripciones
@@ -426,10 +500,11 @@ function wireTopic(slug, v) {
     e.preventDefault();
     const name = $("sf-name").value.trim(), amount = parseFloat($("sf-amount").value.replace(/\./g, "").replace(",", "."));
     if (!name || !(amount > 0)) { say("Escribe el nombre y un importe mayor que 0.", true); return; }
-    uiOpen.subs = true;
-    act(() => post("/api/expenses", { name, amount, cycle: $("sf-cycle").value, next: $("sf-next").value, notice: $("sf-notice").value }), `Suscripción «${name}» añadida.`);
+    uiOpen.gastos = true;
+    const sub = $("sf-kind").value === "sub";
+    act(() => post("/api/expenses", { name, amount, sub, cat: $("sf-cat").value, cycle: $("sf-cycle").value, next: $("sf-next").value, notice: $("sf-notice").value }), `«${name}» añadido.`);
   });
-  box.querySelectorAll("[data-sub-del]").forEach((b) => b.addEventListener("click", () => act(() => post(`/api/expenses/${b.dataset.subDel}`, {}, "DELETE"), "Suscripción quitada.")));
+  box.querySelectorAll("[data-sub-del]").forEach((b) => b.addEventListener("click", () => act(() => post(`/api/expenses/${b.dataset.subDel}`, {}, "DELETE"), "Quitado.")));
   box.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", () => {
     compose(slug, { request: `Cancelar mi suscripción a «${b.dataset.cancel}» con efecto en la próxima renovación y pedir confirmación por escrito. Deja el destinatario en blanco.`, lang: "es" });
     $("composer").scrollIntoView({ block: "start", behavior: "smooth" });
@@ -484,6 +559,12 @@ document.addEventListener("click", (e) => {
   if (b && (b.closest("#groups") || b.closest("#alert-list"))) openTopic(b.dataset.topic);
 });
 $("back-topics").addEventListener("click", () => { showTab("temas"); renderAll(); window.scrollTo({ top: 0 }); });
+document.addEventListener("click", (e) => {
+  const d = e.target.closest("[data-task-del]"), ok = e.target.closest("[data-task-del-ok]");
+  if (d) { pendingTaskDel = +d.dataset.taskDel; renderAll(); if (currentTopic) renderTopic(currentTopic); }
+  else if (ok) { pendingTaskDel = null; act(() => post(`/api/tasks/${ok.dataset.taskDelOk}`, {}, "DELETE"), "Tarea borrada."); }
+  else if (pendingTaskDel && !e.target.closest(".tdel")) { pendingTaskDel = null; renderAll(); }
+});
 document.addEventListener("change", (e) => {
   const id = e.target.dataset?.task; if (!id) return;
   act(() => post(`/api/tasks/${id}`, { status: e.target.checked ? "done" : "open" }, "PATCH"));
@@ -504,7 +585,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- entrada rápida ---------- */
 const norm = (x) => x.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-const ALIASES = { finanzas: /finanz|impuest/, "casa-valle": /valle/, "casa-berlin": /casa berlin|piso de berlin/, colegio: /colegio/, viajes: /viaje/, "rente-s": /sabrina/, "rente-g": /gonzalo/, documentos: /document|archivo|fichero/ };
+const ALIASES = { finanzas: /finanz|impuest/, "casa-valle": /valle/, "casa-berlin": /casa berlin|piso de berlin/, colegio: /colegio/, viajes: /viaje/, "rente-s": /sabrina/, "rente-g": /gonzalo/, documentos: /document|archivo|fichero/, eventos: /evento|cumple|familia/ };
 function findTopic(text) {
   const n = norm(text);
   return S.topics.find((t) => n.includes(norm(t.name))) || S.topics.find((t) => ALIASES[t.slug]?.test(n));

@@ -316,3 +316,38 @@ button.alerts-head { width: 100%; text-align: left; cursor: default; }
   .alerts-card.collapsed .chev { transform: rotate(-90deg); }
   .alerts-card.collapsed #alert-list, .alerts-card.collapsed #alert-more { display: none; }
 }
+
+/* Rejilla compacta de temas (menos scroll en móvil) */
+.topics-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+.card.topic { padding: 16px; gap: 8px; }
+.card.topic h3 { font-size: 1rem; }
+.new-topic { border-style: dashed; background: transparent; }
+.new-topic h3 { color: var(--muted); }
+.new-topic input { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--fg); }
+@media (max-width: 520px) {
+  .topics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .card.topic { padding: 12px; }
+  .card.topic h3 { font-size: .92rem; }
+  .card.topic .badge { font-size: .7rem; padding: 2px 8px; }
+  .new-topic.card:is(form) { grid-column: 1 / -1; }
+}
+/* Borrar */
+.tdel { color: var(--faint); font-size: 1.05rem; line-height: 1; width: 28px; height: 28px; border-radius: 999px; flex: none; }
+.tdel:hover { color: var(--late); background: var(--late-soft); }
+.tdel.on { width: auto; padding: 0 10px; font-size: .78rem; font-weight: 600; color: #fff; background: var(--late); }
+.trows li { grid-template-columns: 20px minmax(0, 1fr) 150px 70px 92px auto; }
+@media (max-width: 640px) { .trows li { grid-template-columns: 20px minmax(0, 1fr) auto auto; } }
+/* Paneles plegables de la ficha: menos aire */
+.full { gap: 10px; }
+.fold > summary { padding: 14px 18px; }
+/* Datos clave y contactos editables */
+.kv-list { list-style: none; margin: 0; padding: 0; }
+.kv-list li { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: .92rem; }
+.kv-list li:first-child { border-top: 0; }
+.kv-list .k { color: var(--muted); }
+.kv-list .v { font-weight: 500; overflow-wrap: anywhere; }
+.item-form, .ev-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.item-form input, .ev-form input { flex: 1 1 140px; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; color: var(--fg); }
+.edit-topic { gap: 12px; }
+.topic-head .badges { align-items: center; }
+@media (max-width: 520px) { .kv-list li { grid-template-columns: minmax(0, 1fr) auto; } .kv-list .k { grid-column: 1 / -1; font-size: .8rem; } }

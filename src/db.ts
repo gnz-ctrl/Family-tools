@@ -41,6 +41,18 @@ const MIGRATIONS: string[][] = [
     `CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT, size INTEGER NOT NULL, chunks INTEGER NOT NULL, uploaded_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS file_chunks (file_id INTEGER NOT NULL REFERENCES files(id), idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (file_id, idx))`,
   ],
+  // 5 · fin de la demostración: se borran los datos de ejemplo y se añade "Eventos familiares"
+  [
+    `DELETE FROM events WHERE demo = 1`,
+    `DELETE FROM mails WHERE demo = 1`,
+    `DELETE FROM history WHERE demo = 1`,
+    `DELETE FROM topic_items WHERE demo = 1`,
+    `DELETE FROM tasks WHERE demo = 1`,
+    `DELETE FROM expenses WHERE demo = 1`,
+    `UPDATE topics SET status_summary = NULL, next_step = NULL, email_lang = NULL, email_to = NULL, email_ref = NULL`,
+    `INSERT OR IGNORE INTO topics (slug, name) VALUES ('eventos', 'Eventos familiares')`,
+    `UPDATE topics SET sort = CASE slug WHEN 'finanzas' THEN 1 WHEN 'casa-valle' THEN 2 WHEN 'casa-berlin' THEN 3 WHEN 'colegio' THEN 4 WHEN 'viajes' THEN 5 WHEN 'eventos' THEN 6 WHEN 'rente-s' THEN 7 WHEN 'rente-g' THEN 8 WHEN 'documentos' THEN 9 ELSE sort END`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

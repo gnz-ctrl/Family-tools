@@ -46,8 +46,9 @@ export async function classify(
 Recibes entradas breves y las colocas en su sitio. Hoy es ${input.today}. Usuarios: ${input.users.join(", ")}. Quien envía: ${input.sender}.
 Temas disponibles:
 ${topicList}
-Devuelve: {"kind":"task"|"note","title":"...","notes":"...","topic_slug":"...","assignee":"email|both","due_date":"YYYY-MM-DD","topic_status_update":"..."}
+Devuelve: {"kind":"task"|"note"|"event","title":"...","notes":"...","topic_slug":"...","assignee":"email|both","due_date":"YYYY-MM-DD","event_time":"HH:MM o texto","place":"...","topic_status_update":"..."}
 Reglas:
+- Si es una cita o celebración con fecha (cumpleaños, comida familiar, reunión, visita), kind="event" con due_date = fecha del evento (y event_time/place si se dicen). Los cumpleaños y reuniones de familia van al tema "eventos" si existe.
 - Si pide hacer algo, kind="task". Si es solo información, kind="note".
 - Título corto y accionable, en español.
 - Convierte fechas relativas a YYYY-MM-DD. Sin fecha: omite due_date.

@@ -35,13 +35,16 @@ export interface User { email: string; name: string; fullName: string }
 
 /** Lo que Claude devuelve al clasificar una entrada */
 export interface Classification {
-  kind: "task" | "note";
+  kind: "task" | "note" | "event";
   title: string;
   notes?: string;
   topic_slug: string;
   assignee: string; // email o "both"
   due_date?: string; // YYYY-MM-DD
   topic_status_update?: string;
+  /** Solo para kind="event" */
+  event_time?: string;
+  place?: string;
 }
 
 /** Lo que Claude devuelve al analizar un correo reenviado a inbox@ */
