@@ -297,3 +297,12 @@ a.btn { text-decoration: none; display: inline-block; }
   .trows li { padding: 10px 12px; }
   .topic-head h2 { font-size: 1.5rem; }
 }
+
+/* Documentos compartidos */
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.doc-list li { flex-wrap: wrap; row-gap: 2px; padding: 4px 0; }
+.doc-list .doc-name { color: var(--fg); font-weight: 500; text-decoration: none; min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.doc-list .doc-name:hover { color: var(--accent); text-decoration: underline; }
+.doc-list .when { margin-left: 0; }
+.doc-list .doc-act { display: inline-flex; gap: 12px; margin-left: auto; }
+@media (max-width: 520px) { .doc-list .when { flex-basis: 100%; padding-left: 44px; } }

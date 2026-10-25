@@ -24,6 +24,9 @@ function explainError(e: unknown): string {
   return "Error interno: " + msg.slice(0, 300);
 }
 
+const MAX_FILE = 10 * 1024 * 1024;
+const CHUNK = 90 * 1024; // trozos pequeños: D1 limita el tamaño de cada fila y de cada consulta
+
 const today = () => new Date().toISOString().slice(0, 10);
 const addDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
@@ -54,7 +57,7 @@ const addHistory = (env: Env, topicId: number, text: string, source = "web") =>
 
 /** Todo lo que necesita la web, en una sola llamada. */
 async function state(env: Env, me: string) {
-  const [topics, items, history, tasks, mails, events, expenses, cal] = await Promise.all([
+  const [topics, items, history, tasks, mails, events, expenses, cal, files] = await Promise.all([
     getTopics(env),
     env.DB.prepare(`SELECT id, topic_id, kind, label, value, extra FROM topic_items ORDER BY sort, id`).all(),
     env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history ORDER BY at DESC, id DESC`).all(),
@@ -63,18 +66,22 @@ async function state(env: Env, me: string) {
     env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar FROM events ORDER BY date, id`).all(),
     env.DB.prepare(`SELECT id, name, cat, amount, cycle, next, notice, sub, flag FROM expenses ORDER BY id`).all(),
     env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>(),
+    env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
   ]);
   return {
     me, today: today(), users: users(env), topics,
     items: items.results, history: history.results, tasks: tasks.results,
     mails: mails.results, events: events.results, expenses: expenses.results,
+    files: files.results,
     calPath: cal ? `/cal/${cal.v}.ics` : null,
   };
 }
 
 /** Entrada libre (web o todo@): Claude la convierte en tarea o nota. */
+const workTopics = async (env: Env) => (await getTopics(env)).filter((t) => t.slug !== "documentos");
+
 async function ingest(env: Env, opts: { text: string; sender: string; source: "web" | "email"; subject?: string }) {
-  const topics = await getTopics(env);
+  const topics = await workTopics(env);
   const r = await classify(env, {
     text: opts.subject ? `Asunto: ${opts.subject}\n\n${opts.text}` : opts.text,
     sender: opts.sender, topics, users: allowedSenders(env), today: today(),
@@ -96,7 +103,7 @@ async function ingest(env: Env, opts: { text: string; sender: string; source: "w
 
 /** Correo reenviado a inbox@: resumen, tema, plazo y eventos. */
 async function ingestMail(env: Env, opts: { subject: string; text: string; forwardedBy: string }) {
-  const topics = await getTopics(env);
+  const topics = await workTopics(env);
   const a = await analyzeMail(env, { ...opts, topics, today: today() });
   const topic = topics.find((t) => t.slug === a.topic_slug) ?? null;
   const row = await env.DB.prepare(
@@ -244,6 +251,43 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     if (b.handOnly) stmts.push(env.DB.prepare(`INSERT INTO tasks (title, topic_id, assignee, due_date, created_by) VALUES (?, ?, ?, ?, ?)`).bind(`Añadir maleta facturada al vuelo de ${b.dest}`, t.id, me, addDays(7), me));
     await env.DB.batch(stmts);
     return json({ ok: true, checkin: minus(1), pack: minus(2) });
+  }
+
+  // Documentos compartidos: archivos de hasta 10 MB, guardados en trozos dentro de D1
+  if (p === "/api/files" && m === "POST") {
+    const name = (url.searchParams.get("name") || "archivo").slice(0, 200);
+    const type = req.headers.get("content-type") || "application/octet-stream";
+    const buf = new Uint8Array(await req.arrayBuffer());
+    if (!buf.length) throw new HttpError(400, "El archivo está vacío");
+    if (buf.length > MAX_FILE) throw new HttpError(413, `«${name}» pesa ${(buf.length / 1048576).toFixed(1)} MB; el máximo es 10 MB`);
+    const n = Math.ceil(buf.length / CHUNK);
+    const row = await env.DB.prepare(`INSERT INTO files (name, type, size, chunks, uploaded_by) VALUES (?, ?, ?, ?, ?) RETURNING id`)
+      .bind(name, type, buf.length, n, me).first<{ id: number }>();
+    const stmts = [];
+    for (let i = 0; i < n; i++) stmts.push(env.DB.prepare(`INSERT INTO file_chunks (file_id, idx, data) VALUES (?, ?, ?)`).bind(row!.id, i, buf.slice(i * CHUNK, (i + 1) * CHUNK).buffer));
+    try { await env.DB.batch(stmts); }
+    catch (e) { await env.DB.prepare(`DELETE FROM files WHERE id = ?`).bind(row!.id).run(); throw e; }
+    return json({ ok: true, id: row!.id });
+  }
+  if ((mm = p.match(/^\/api\/files\/(\d+)$/)) && m === "GET") {
+    const f = await env.DB.prepare(`SELECT id, name, type, size FROM files WHERE id = ?`).bind(mm[1]).first<{ id: number; name: string; type: string; size: number }>();
+    if (!f) throw new HttpError(404, "Ese archivo ya no existe");
+    const { results } = await env.DB.prepare(`SELECT data FROM file_chunks WHERE file_id = ? ORDER BY idx`).bind(f.id).all<{ data: ArrayBuffer | number[] }>();
+    const out = new Uint8Array(f.size); let off = 0;
+    for (const r of results) { const c = new Uint8Array(r.data as ArrayBuffer); out.set(c, off); off += c.length; }
+    const inline = /^(image\/|application\/pdf|text\/plain)/.test(f.type);
+    return new Response(out, { headers: {
+      "content-type": f.type || "application/octet-stream",
+      "content-disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+      "cache-control": "private, max-age=3600",
+    } });
+  }
+  if ((mm = p.match(/^\/api\/files\/(\d+)$/)) && m === "DELETE") {
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM file_chunks WHERE file_id = ?`).bind(mm[1]),
+      env.DB.prepare(`DELETE FROM files WHERE id = ?`).bind(mm[1]),
+    ]);
+    return json({ ok: true });
   }
 
   // Borra los datos de ejemplo. Solo por petición explícita (no hay botón en la web).

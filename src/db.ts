@@ -35,6 +35,12 @@ const MIGRATIONS: string[][] = [
   ],
   // 3 · datos de ejemplo para enseñar la plataforma (todo lo marcado demo = 1 se borra con resetDemo)
   seedDemo(),
+  // 4 · Morean pasa a ser "Documentos compartidos": archivos pequeños guardados en trozos dentro de D1
+  [
+    `UPDATE topics SET slug = 'documentos', name = 'Documentos compartidos', status_summary = NULL, next_step = NULL WHERE slug = 'morean'`,
+    `CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, type TEXT, size INTEGER NOT NULL, chunks INTEGER NOT NULL, uploaded_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS file_chunks (file_id INTEGER NOT NULL REFERENCES files(id), idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (file_id, idx))`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

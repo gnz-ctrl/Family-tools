@@ -93,6 +93,11 @@ function renderAll() {
   $("groups").innerHTML = `<div class="cards">${S.topics.map((t) => {
     const n = open.filter((x) => x.topic_id === t.id).length;
     const m = S.mails.filter((x) => x.topic_id === t.id && x.state === "new").length;
+    if (t.slug === "documentos") {
+      const nf = (S.files || []).length;
+      return `<button type="button" class="card topic" data-topic="${t.slug}">
+      <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start"><span class="badge mute">${nf ? plural(nf, "archivo", "archivos") : "Vacío"}</span></div></button>`;
+    }
     const badges = [
       m ? `<span class="badge info">${plural(m, "correo", "correos")}</span>` : "",
       n ? `<span class="badge warn">${plural(n, "pendiente", "pendientes")}</span>` : "",
@@ -160,6 +165,7 @@ const ATTEND = { "": "Elige quién va", g: "Va Gonzalo", s: "Va Sabrina", b: "Va
 const ATTEND_TXT = { g: "va Gonzalo", s: "va Sabrina", b: "vais los dos", n: "no va nadie" };
 
 function renderTopic(slug) {
+  if (slug === "documentos") return renderDocs();
   const v = det(slug); const t = v.t; if (!t) return;
   const newM = v.mails.filter((m) => m.state === "new").length;
   const badges = [
@@ -198,6 +204,62 @@ function renderTopic(slug) {
 
   if (slug === "viajes") $("trip-slot").appendChild(tripPanel);
   wireTopic(slug, v);
+}
+
+/* ---------- documentos compartidos ---------- */
+const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " MB" : Math.max(1, Math.round(n / 1024)) + " KB");
+const extOf = (f) => (f.name.split(".").pop() || "").slice(0, 4).toUpperCase() || "DOC";
+let pendingDelete = null;
+function renderDocs() {
+  const files = S.files || [];
+  $("topic-detail").innerHTML = `
+    <div class="topic-head"><div><h2>Documentos compartidos</h2></div><div class="badges"><span class="badge mute">${plural(files.length, "archivo", "archivos")}</span></div></div>
+    <div class="full">
+      <div class="card drop" id="drop">
+        <h4>Subir archivos</h4>
+        <p>Fotos, PDFs o cualquier archivo pequeño (hasta 10 MB cada uno). Desde el móvil puedes elegir de la fototeca o hacer una foto.</p>
+        <div class="actions"><label class="btn" for="file-input" style="color:var(--ink-fg);cursor:pointer">Elegir archivos</label><span class="note-sim" id="up-msg"></span></div>
+        <input type="file" id="file-input" multiple hidden>
+      </div>
+      <div class="card">
+        <h4>Archivos</h4>
+        ${files.length ? `<ul class="files doc-list">${files.map((f) => `<li>
+          <span class="ext">${esc(extOf(f))}</span>
+          <a class="doc-name" href="/api/files/${f.id}" target="_blank" rel="noopener">${esc(f.name)}</a>
+          <span class="when">${kb(f.size)} · ${esc(userName(f.uploaded_by))} · ${esc(fmt(f.created_at.slice(0, 10)))}</span>
+          ${pendingDelete === f.id
+            ? `<span class="doc-act"><button class="link danger" type="button" data-del-ok="${f.id}">Borrar</button><button class="link" type="button" data-del-no>Cancelar</button></span>`
+            : `<span class="doc-act"><button class="link danger" type="button" data-del="${f.id}" aria-label="Borrar ${esc(f.name)}">Quitar</button></span>`}
+        </li>`).join("")}</ul>` : `<p class="note-sim">Todavía no hay archivos.</p>`}
+      </div>
+    </div>`;
+  $("file-input").addEventListener("change", (e) => uploadFiles([...e.target.files]));
+  const drop = $("drop");
+  ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => uploadFiles([...(e.dataTransfer?.files || [])]));
+  $("topic-detail").querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => { pendingDelete = +b.dataset.del; renderDocs(); }));
+  $("topic-detail").querySelector("[data-del-no]")?.addEventListener("click", () => { pendingDelete = null; renderDocs(); });
+  $("topic-detail").querySelector("[data-del-ok]")?.addEventListener("click", (e) => {
+    const id = +e.target.dataset.delOk; pendingDelete = null;
+    act(() => post(`/api/files/${id}`, {}, "DELETE"), "Archivo borrado.");
+  });
+}
+async function uploadFiles(list) {
+  if (!list.length) return;
+  const msg = $("up-msg"); let ok = 0;
+  for (const [i, f] of list.entries()) {
+    if (f.size > 10 * 1048576) { say(`«${f.name}» pesa ${kb(f.size)}; el máximo es 10 MB.`, true); continue; }
+    if (msg) msg.textContent = `Subiendo ${i + 1} de ${list.length}: ${f.name}…`;
+    try {
+      const res = await fetch(`/api/files?name=${encodeURIComponent(f.name)}`, { method: "POST", headers: { "content-type": f.type || "application/octet-stream" }, body: f });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      ok++;
+    } catch (e) { say(`⚠ No se pudo subir «${f.name}»: ${e.message}`, true); }
+  }
+  await load(); renderAll();
+  if (ok) say(`${plural(ok, "archivo subido", "archivos subidos")}.`);
 }
 
 /* ---------- correos recibidos ---------- */
@@ -442,7 +504,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 
 /* ---------- entrada rápida ---------- */
 const norm = (x) => x.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-const ALIASES = { finanzas: /finanz|impuest/, "casa-valle": /valle/, "casa-berlin": /casa berlin|piso de berlin/, colegio: /colegio/, viajes: /viaje/, "rente-s": /sabrina/, "rente-g": /gonzalo/, morean: /morean/ };
+const ALIASES = { finanzas: /finanz|impuest/, "casa-valle": /valle/, "casa-berlin": /casa berlin|piso de berlin/, colegio: /colegio/, viajes: /viaje/, "rente-s": /sabrina/, "rente-g": /gonzalo/, documentos: /document|archivo|fichero/ };
 function findTopic(text) {
   const n = norm(text);
   return S.topics.find((t) => n.includes(norm(t.name))) || S.topics.find((t) => ALIASES[t.slug]?.test(n));

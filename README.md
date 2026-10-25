@@ -3,8 +3,16 @@
 Plataforma privada para organizar los temas de la familia: tareas, temas (seguro, pensión, papeles…),
 entrada por email y web, y Claude colocando cada cosa en su sitio. Ver [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**MVP incluido:** tareas (pendientes / hechas con historial), temas con "estado actual",
-entrada rápida en lenguaje natural, entrada por email, y redacción de emails en alemán.
+**Incluye:** temas con ficha (estado, próximo paso, datos clave, historial, documentos, contactos), tareas,
+alertas de plazos, entrada rápida en lenguaje natural, `todo@` (tareas) e `inbox@` (correos reenviados que Claude
+resume y de los que saca eventos), calendario (en la web y suscribible en `/cal/<token>.ics`), redactor de emails
+con Claude, gastos fijos y suscripciones, planificador de viajes y documentos compartidos (archivos de hasta 10 MB).
+
+**Base de datos:** las migraciones están en `src/db.ts` y el Worker las aplica solo al arrancar.
+Para cambiar la estructura, añade una migración al final de la lista (nunca edites una ya publicada).
+
+**Datos de ejemplo:** van marcados con `demo = 1`. Se borran con `POST /api/admin/reset-demo`
+y el cuerpo `{"confirm":"BORRAR EJEMPLOS"}` (con sesión iniciada).
 
 ## Puesta en marcha (una vez, ~30 min)
 
