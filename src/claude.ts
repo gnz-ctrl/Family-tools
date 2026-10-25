@@ -38,7 +38,8 @@ Reglas:
 - Convierte fechas relativas ("el viernes", "antes de marzo") a YYYY-MM-DD. Si no hay fecha, omítela.
 - assignee: el email de la persona mencionada; si no se menciona a nadie, el remitente; si es para ambos, "both".
 - Si la entrada cambia el estado de un tema (p.ej. "la Krankenkasse aprobó el reembolso"), resume el nuevo estado en topic_status_update.
-- Nunca inventes datos que no estén en la entrada.`;
+- Nunca inventes datos que no estén en la entrada.
+Responde SIEMPRE llamando a la herramienta file_item, sin texto adicional.`;
 
   const tool = {
     name: "file_item",
@@ -61,13 +62,23 @@ Reglas:
   const out = await callClaude(env, {
     system,
     tools: [tool],
-    tool_choice: { type: "tool", name: "file_item" },
+    // Este modelo no admite forzar la herramienta: se pide en las instrucciones y se acepta JSON como respaldo.
+    tool_choice: { type: "auto" },
     messages: [{ role: "user", content: input.text.slice(0, 8000) }],
   });
 
   const block = out.content.find((c) => c.type === "tool_use");
-  if (!block?.input) throw new Error("Claude no devolvió una clasificación");
-  return block.input as Classification;
+  if (block?.input) return block.input as Classification;
+  // Respaldo: si contestó con texto, buscar un objeto JSON dentro.
+  const text = out.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  const m = text.match(/\{[\s\S]*\}/);
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[0]) as Classification;
+      if (parsed.title && parsed.topic_slug) return parsed;
+    } catch { /* sigue abajo */ }
+  }
+  throw new Error("Claude no devolvió una clasificación");
 }
 
 /** Redacta un email formal en alemán a partir de una petición en español (fase 2, ya usable). */
