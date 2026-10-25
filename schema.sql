@@ -45,14 +45,12 @@ CREATE TABLE IF NOT EXISTS inbox_items (
 );
 
 -- Temas iniciales (editables)
-INSERT OR IGNORE INTO topics (slug, name, icon) VALUES
-  ('salud',     'Salud y seguro médico', '🩺'),
-  ('pension',   'Pensión y jubilación',  '🏦'),
-  ('finanzas',  'Finanzas e impuestos',  '💶'),
-  ('casa',      'Casa',                  '🏠'),
-  ('coche',     'Coche',                 '🚗'),
-  ('ninos',     'Niños y colegio',       '🧸'),
-  ('papeles',   'Papeles y administración', '📄'),
-  ('viajes',    'Viajes',                '✈️'),
-  ('compra',    'Lista de la compra',    '🛒'),
-  ('otros',     'Otros',                 '📌');
+INSERT OR IGNORE INTO topics (slug, name) VALUES
+  ('finanzas',    'Finanzas e impuestos'),
+  ('casa-valle',  'Casa Valle'),
+  ('casa-berlin', 'Casa Berlín'),
+  ('colegio',     'Colegios'),
+  ('viajes',      'Viajes'),
+  ('rente-s',     'Rente y seguros Sabrina'),
+  ('rente-g',     'Rente y seguros Gonzalo'),
+  ('morean',      'Morean');
