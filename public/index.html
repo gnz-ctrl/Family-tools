@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Family Hub</title>
+  <meta name="theme-color" content="#2f5d50">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Family Hub</h1>
+    <span id="me" class="muted"></span>
+  </header>
+
+  <form id="quick" class="quick">
+    <textarea id="quick-text" rows="2" placeholder="Escribe lo que sea: «pedir cita Bürgeramt para el pasaporte de Lucía antes de diciembre»"></textarea>
+    <button type="submit" id="quick-btn">Añadir</button>
+  </form>
+  <p id="quick-result" class="result" hidden></p>
+
+  <nav class="tabs">
+    <button data-tab="open" class="active">Pendientes</button>
+    <button data-tab="done">Hechas</button>
+    <button data-tab="topics">Temas</button>
+    <button data-tab="email">Email DE</button>
+  </nav>
+
+  <main>
+    <section id="tab-open"><ul id="open-list" class="list"></ul></section>
+    <section id="tab-done" hidden><ul id="done-list" class="list"></ul></section>
+    <section id="tab-topics" hidden><div id="topics" class="topics"></div></section>
+    <section id="tab-email" hidden>
+      <form id="email-form" class="stack">
+        <label>Tema
+          <select id="email-topic"></select>
+        </label>
+        <label>¿Qué necesitas? (en español)
+          <textarea id="email-request" rows="4" placeholder="Pedir a la Krankenkasse el certificado de afiliación para el empleador nuevo"></textarea>
+        </label>
+        <button type="submit" id="email-btn">Redactar en alemán</button>
+      </form>
+      <pre id="email-draft" class="draft" hidden></pre>
+      <button id="email-copy" hidden>Copiar</button>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

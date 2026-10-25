@@ -1,0 +1,33 @@
+name = "family-hub"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# La web (PWA) se sirve desde /public
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+# Dominio: crea la ruta en Cloudflare o descomenta esto tras el primer deploy
+# routes = [{ pattern = "sbkperez.me", custom_domain = true }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "family-hub"
+database_id = "REEMPLAZAR_CON_EL_ID_DE_wrangler_d1_create"
+
+[vars]
+# Emails que pueden usar la plataforma y enviar tareas por email (separados por coma)
+ALLOWED_SENDERS = "gportabella@gmail.com"
+CLAUDE_MODEL = "claude-sonnet-5-5"
+# Equipo de Cloudflare Access, p.ej. "sbkperez" para sbkperez.cloudflareaccess.com
+ACCESS_TEAM = ""
+# AUD tag de la aplicación de Access (Zero Trust → Access → Applications)
+ACCESS_AUD = ""
+
+# Secretos (no van aquí): wrangler secret put ANTHROPIC_API_KEY
+
+# Resumen semanal: domingos 07:00 UTC (fase 2)
+[triggers]
+crons = ["0 7 * * SUN"]
