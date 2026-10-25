@@ -22,7 +22,7 @@ database_id = "b93ce0aa-83a4-4612-8648-023e24a891c3"
 ALLOWED_SENDERS = "gportabella@gmail.com,sabrina.schaerf@gmail.com"
 CLAUDE_MODEL = "claude-sonnet-5-5"
 # Equipo de Cloudflare Access, p.ej. "sbkperez" para sbkperez.cloudflareaccess.com
-ACCESS_TEAM = ""
+ACCESS_TEAM = "sbkperez"
 # AUD tag de la aplicación de Access (Zero Trust → Access → Applications)
 ACCESS_AUD = "7da86e38c5ebeadfd4b00fe8480324814d4cd7a06c055d319576ca987c9ae16c"
 
