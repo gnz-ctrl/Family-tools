@@ -17,6 +17,9 @@ body {
 header { display: flex; justify-content: space-between; align-items: baseline; }
 h1 { font-size: 1.4rem; margin: 0 0 12px; }
 .muted { color: var(--muted); font-size: .85rem; }
+.user { display: flex; gap: 12px; align-items: baseline; }
+.logout { color: var(--accent); font-size: .85rem; font-weight: 600; text-decoration: none; }
+.logout:hover { text-decoration: underline; }
 textarea, select, button { font: inherit; }
 textarea, select {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line);
