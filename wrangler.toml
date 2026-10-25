@@ -3,6 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Solo se accede por sbkperez.me (protegido con Access): sin direcciones alternativas
+workers_dev = false
+preview_urls = false
+
 # La web (PWA) se sirve desde /public
 [assets]
 directory = "./public"
