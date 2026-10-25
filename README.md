@@ -30,7 +30,7 @@ npm run deploy
 ```
 
 ### 3. Dominio
-Cloudflare → Workers → family-hub → Settings → Domains → añadir `sbkperez.me`.
+Cloudflare → Workers → family-tools → Settings → Domains → añadir `sbkperez.me`.
 
 ### 4. Login con Cloudflare Access (obligatorio: sin esto la API rechaza todo)
 1. Cloudflare → Zero Trust → Access → Applications → *Add application* → Self-hosted.
@@ -41,7 +41,7 @@ Cloudflare → Workers → family-hub → Settings → Domains → añadir `sbkp
 
 ### 5. Entrada por email
 Cloudflare → sbkperez.me → Email → Email Routing → activar.
-Routing rules: `todo@sbkperez.me` y `inbox@sbkperez.me` → acción *Send to a Worker* → `family-hub`.
+Routing rules: `todo@sbkperez.me` y `inbox@sbkperez.me` → acción *Send to a Worker* → `family-tools`.
 Solo se aceptan emails de las direcciones de `ALLOWED_SENDERS`.
 
 Para Gmail: crea filtros en cada cuenta que reenvíen lo relevante a `inbox@sbkperez.me`.
