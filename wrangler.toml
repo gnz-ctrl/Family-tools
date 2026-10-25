@@ -15,7 +15,7 @@ run_worker_first = ["/api/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "family-hub"
-database_id = "REEMPLAZAR_CON_EL_ID_DE_wrangler_d1_create"
+database_id = "b93ce0aa-83a4-4612-8648-023e24a891c3"
 
 [vars]
 # Emails que pueden usar la plataforma y enviar tareas por email (separados por coma)
