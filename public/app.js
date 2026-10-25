@@ -1,110 +1,589 @@
+/* Family Hub — web. Todo el estado viene de /api/state; cada acción llama a la API y recarga. */
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+let S = null;                // estado completo
+let currentTopic = null;     // slug del tema abierto
+const uiOpen = {};           // desplegables abiertos
+const drafts = {};           // borradores de email por tema
+
+/* ---------- utilidades ---------- */
+const todayISO = () => S?.today || new Date().toISOString().slice(0, 10);
+const D = (d) => new Date(d + "T12:00:00");
+const addDays = (n, from) => { const d = from ? D(from) : D(todayISO()); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+const daysTo = (d) => Math.round((D(d) - D(todayISO())) / 864e5);
+const fmt = (d) => D(d).toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+const fmtLong = (d) => D(d).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+const eur = (n) => Number(n).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+const plural = (n, a, b) => `${n} ${n === 1 ? a : b}`;
+
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    ...opts,
-    headers: { "content-type": "application/json", ...(opts.headers || {}) },
-  });
+  let res;
+  try { res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } }); }
+  catch { throw new Error("No hay conexión o la sesión ha caducado. Recarga la página."); }
+  if (res.status === 401 || res.redirected) { location.reload(); throw new Error("Sesión caducada"); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
   return data;
 }
+const post = (path, body, method = "POST") => api(path, { method, body: JSON.stringify(body || {}) });
 
-const fmtDate = (d) => d ? new Date(d + "T00:00:00").toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "";
-const today = new Date().toISOString().slice(0, 10);
-
-function who(email) {
-  if (!email || email === "both") return "ambos";
-  return email.split("@")[0];
+let flashTimer;
+function say(text, error = false) {
+  const f = $("flash"); f.hidden = false; f.textContent = text; f.classList.toggle("error", error);
+  clearTimeout(flashTimer); if (!error) flashTimer = setTimeout(() => (f.hidden = true), 8000);
+}
+async function load() { S = await api("/api/state"); }
+/** Ejecuta una acción, recarga el estado y pinta de nuevo. */
+async function act(fn, ok) {
+  try { const r = await fn(); await load(); renderAll(); if (ok) say(typeof ok === "function" ? ok(r) : ok); return r; }
+  catch (e) { say("⚠ " + e.message, true); throw e; }
 }
 
-function taskItem(t) {
-  const late = t.status === "open" && t.due_date && t.due_date < today;
-  const due = t.due_date ? `<span class="${late ? "late" : ""}">📅 ${fmtDate(t.due_date)}</span> · ` : "";
-  return `<li>
-    <input type="checkbox" data-id="${t.id}" ${t.status === "done" ? "checked" : ""} aria-label="Completar">
-    <div>
-      <div>${esc(t.title)}</div>
-      <div class="meta">${due}${esc(t.topic_icon || "")} ${esc(t.topic_name || "")} · ${esc(who(t.assignee))}
-        ${t.notes ? `<br>${esc(t.notes)}` : ""}
-        ${t.completed_at ? `<br>✔ ${esc(t.completed_at.slice(0, 10))} por ${esc(who(t.completed_by))}` : ""}</div>
+/* ---------- acceso a los datos ---------- */
+const topicById = (id) => S.topics.find((t) => t.id === id);
+const topicBySlug = (s) => S.topics.find((t) => t.slug === s);
+const userName = (email) => email === "both" ? "Los dos" : (S.users.find((u) => u.email === email)?.name || (email || "").split("@")[0]);
+const tName = (id) => topicById(id)?.name || "Sin tema";
+function det(slug) {
+  const t = topicBySlug(slug); const id = t?.id;
+  return {
+    t,
+    facts: S.items.filter((i) => i.topic_id === id && i.kind === "fact"),
+    contacts: S.items.filter((i) => i.topic_id === id && i.kind === "contact"),
+    docs: S.items.filter((i) => i.topic_id === id && i.kind === "doc"),
+    history: S.history.filter((h) => h.topic_id === id),
+    mails: S.mails.filter((m) => m.topic_id === id),
+    events: S.events.filter((e) => e.topic_id === id),
+    open: S.tasks.filter((x) => x.topic_id === id && x.status === "open").sort(byDue),
+  };
+}
+const byDue = (a, b) => (a.due_date || "9") < (b.due_date || "9") ? -1 : 1;
+
+function dueBadge(d) {
+  if (!d) return `<span class="badge mute">Sin fecha</span>`;
+  const n = daysTo(d);
+  if (n < 0) return `<span class="badge late">Vencida</span>`;
+  if (n === 0) return `<span class="badge late">Hoy</span>`;
+  if (n === 1) return `<span class="badge warn">Mañana</span>`;
+  if (n <= 7) return `<span class="badge warn">${fmt(d)}</span>`;
+  return `<span class="badge">${fmt(d)}</span>`;
+}
+const fold = (key, summary, body) => `<details class="fold" data-fold="${key}" ${uiOpen[key] ? "open" : ""}>
+  <summary>${summary}<span class="chev" aria-hidden="true">▾</span></summary><div class="fold-body">${body}</div></details>`;
+
+/* =========================================================
+   PORTADA
+   ========================================================= */
+function renderAll() {
+  if (!S) return;
+  const open = S.tasks.filter((t) => t.status === "open").sort(byDue);
+  const done = S.tasks.filter((t) => t.status === "done").sort((a, b) => (a.completed_at < b.completed_at ? 1 : -1)).slice(0, 30);
+  const row = (t) => `<li class="${t.status === "done" ? "done" : ""}">
+    <input type="checkbox" id="cb-${t.id}" data-task="${t.id}" ${t.status === "done" ? "checked" : ""} aria-label="Hecha">
+    <label class="tt" for="cb-${t.id}">${esc(t.title)}</label>
+    <span class="tm">${esc(tName(t.topic_id))}</span>
+    <span class="tw">${esc(userName(t.status === "done" ? t.completed_by : t.assignee))}</span>
+    <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span></li>`;
+  $("open-list").innerHTML = open.map(row).join("") || `<li class="empty">Nada pendiente.</li>`;
+  $("done-list").innerHTML = done.map(row).join("");
+  $("done-sum").textContent = `Hechas (${S.tasks.length - open.length})`;
+  $("ov-count").textContent = open.length;
+
+  $("groups").innerHTML = `<div class="cards">${S.topics.map((t) => {
+    const n = open.filter((x) => x.topic_id === t.id).length;
+    const m = S.mails.filter((x) => x.topic_id === t.id && x.state === "new").length;
+    const badges = [
+      m ? `<span class="badge info">${plural(m, "correo", "correos")}</span>` : "",
+      n ? `<span class="badge warn">${plural(n, "pendiente", "pendientes")}</span>` : "",
+      !m && !n ? (t.status_summary ? `<span class="badge">Al día</span>` : `<span class="badge mute">Sin novedades</span>`) : "",
+    ].join("");
+    return `<button type="button" class="card topic" data-topic="${t.slug}">
+      <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${badges}</div></button>`;
+  }).join("")}</div>`;
+
+  renderCalendar();
+  renderAlerts();
+  if (currentTopic) renderTopic(currentTopic);
+}
+
+/* ---------- calendario ---------- */
+function renderCalendar() {
+  const evs = S.events.filter((e) => e.in_calendar && daysTo(e.date) >= 0).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const pending = S.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0).length;
+  $("cal-count").textContent = evs.length;
+  const byDay = {};
+  evs.forEach((e) => (byDay[e.date] ||= []).push(e));
+  const url = S.calPath ? location.origin + S.calPath : "";
+  $("cal-body").innerHTML = `<div class="card" style="gap:4px">
+    ${Object.keys(byDay).map((d) => `<div class="cal-day"><time>${esc(fmt(d))}<br><small>${D(d).toLocaleDateString("es-ES", { weekday: "short" })}</small></time><div>
+      ${byDay[d].map((e) => `<div class="ev"><b>${esc(e.title)}</b><small>${esc([e.time, e.place, ATTEND_TXT[e.attendee] && cap(ATTEND_TXT[e.attendee])].filter(Boolean).join(" · "))}</small></div>`).join("")}
+    </div></div>`).join("") || `<p class="note-sim">Todavía no hay nada en el calendario. Los eventos se añaden desde cada tema (por ejemplo, en Colegios).</p>`}
+    ${pending ? `<p class="note-sim" style="margin-top:8px">${plural(pending, "evento", "eventos")} esperando a que decidáis quién va.</p>` : ""}
+    ${url ? `<div class="cal-sub"><span><b style="color:var(--fg)">Verlo en el calendario del móvil:</b> suscríbete a esta dirección (Google Calendar → Otros calendarios → Desde URL; en iPhone: Ajustes → Calendario → Cuentas → Añadir calendario suscrito).</span>
+      <code id="cal-url">${esc(url)}</code><div class="actions"><button class="btn light" type="button" id="cal-copy">Copiar dirección</button></div></div>` : ""}
+  </div>`;
+  $("cal-copy")?.addEventListener("click", (e) => copyText(url, e.target, "Dirección copiada"));
+}
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/* ---------- alertas ---------- */
+function inDays(n) { return n < 0 ? `Hace ${plural(-n, "día", "días")}` : n === 0 ? "Hoy" : n === 1 ? "Mañana" : `En ${n} días`; }
+function renderAlerts() {
+  const items = [];
+  S.tasks.filter((t) => t.status === "open" && t.due_date && daysTo(t.due_date) <= 30).forEach((t) =>
+    items.push({ n: daysTo(t.due_date), id: t.topic_id, text: (daysTo(t.due_date) < 0 ? "Venció: " : "Plazo: ") + t.title }));
+  S.mails.filter((m) => m.state === "new" && m.due && daysTo(m.due) <= 30).forEach((m) =>
+    items.push({ n: daysTo(m.due), id: m.topic_id, text: m.todo || m.subject }));
+  S.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0 && daysTo(e.date) <= 30).forEach((e) =>
+    items.push({ n: daysTo(e.date), id: e.topic_id, text: `${e.title}: falta decidir quién va` }));
+  const fin = topicBySlug("finanzas");
+  S.expenses.filter((e) => e.flag && e.next && daysTo(e.next) <= 30 && !S.mails.some((m) => m.state === "new" && m.from_name === e.name)).forEach((e) =>
+    items.push({ n: daysTo(e.next) - 1, id: fin?.id, text: `Último día para cancelar ${e.name.toLowerCase()} (${eur(e.amount)})` }));
+  items.sort((a, b) => a.n - b.n);
+  $("alert-count").textContent = items.length;
+  $("alert-list").innerHTML = items.slice(0, 7).map((a) => {
+    const t = topicById(a.id);
+    return `<li><button type="button" ${t ? `data-topic="${t.slug}"` : ""}>
+      <span class="when ${a.n <= 2 ? "late" : a.n <= 7 ? "warn" : ""}">${inDays(a.n)}</span>
+      <span class="what">${esc(a.text)}<span class="tag">${esc(t?.name || "Sin tema")}</span></span></button></li>`;
+  }).join("") || `<li class="note-sim">Ningún plazo en los próximos 30 días.</li>`;
+  $("alert-more").hidden = items.length <= 7;
+  $("alert-more").textContent = `Y ${items.length - 7} más en los próximos 30 días`;
+}
+
+/* =========================================================
+   FICHA DE TEMA
+   ========================================================= */
+const LANGS = { de: "Alemán", es: "Español", en: "Inglés" };
+const ATTEND = { "": "Elige quién va", g: "Va Gonzalo", s: "Va Sabrina", b: "Vamos los dos", n: "No hace falta ir" };
+const ATTEND_TXT = { g: "va Gonzalo", s: "va Sabrina", b: "vais los dos", n: "no va nadie" };
+
+function renderTopic(slug) {
+  const v = det(slug); const t = v.t; if (!t) return;
+  const newM = v.mails.filter((m) => m.state === "new").length;
+  const badges = [
+    newM ? `<span class="badge info">${plural(newM, "correo nuevo", "correos nuevos")}</span>` : "",
+    v.open.length ? `<span class="badge warn">${plural(v.open.length, "pendiente", "pendientes")}</span>` : "",
+    !newM && !v.open.length ? `<span class="badge">Al día</span>` : "",
+  ].join("");
+  const empty = (txt) => `<p class="note-sim">${txt}</p>`;
+  const kv = (rows) => `<dl class="kv">${rows.map((r) => `<dt>${esc(r.label)}</dt><dd>${esc(r.value)}</dd>`).join("")}</dl>`;
+
+  $("topic-detail").innerHTML = `
+    <div class="topic-head"><div><h2>${esc(t.name)}</h2></div><div class="badges">${badges}</div></div>
+    <div class="callout"><b>Estado actual:</b> ${esc(t.status_summary || "Todavía no hay nada guardado en este tema.")}${t.next_step ? `<br><b>Próximo paso:</b> ${esc(t.next_step)}` : ""}</div>
+    <div class="full">
+      ${fold("facts-" + slug, `<span class="fold-title">Datos clave</span>`, v.facts.length ? kv(v.facts) : empty("Cuando llegue algo sobre este tema, aquí aparecerán números de contrato, importes y fechas."))}
+      ${slug === "finanzas" ? dashboardHTML() : ""}
+      ${slug === "viajes" ? `<div id="trip-slot"></div>` : ""}
+      ${mailsHTML(v.mails)}
+      ${v.events.length ? eventsHTML(v.events) : ""}
     </div>
-  </li>`;
+    <div class="detail">
+      <div class="col">
+        <div class="card"><h4>Pendientes</h4>${v.open.length ? v.open.map((x) => `<div class="mini-task">
+            <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
+            <div class="grow">${esc(x.title)}<div class="foot">${esc(userName(x.assignee))}</div></div>${dueBadge(x.due_date)}</div>`).join("") : empty("No hay nada pendiente en este tema.")}</div>
+        ${composerHTML(slug)}
+      </div>
+      <div class="col">
+        <div class="card"><h4>Historial</h4>
+          <form class="note-form" id="note-form"><input type="text" id="note-text" placeholder="Añadir una nota" aria-label="Nota"><button class="btn" type="submit">Guardar</button></form>
+          ${v.history.length ? `<ul class="timeline">${v.history.slice(0, 20).map((h) => `<li><time>${esc(fmt(h.at))}</time><div>${esc(h.text)}<div class="src">vía ${esc(h.source)}</div></div></li>`).join("")}</ul>` : empty("Todavía no hay historial.")}</div>
+        <div class="card"><h4>Documentos</h4>${v.docs.length ? `<ul class="files">${v.docs.map((d) => `<li><span class="ext">${esc(d.value || "DOC")}</span><span>${esc(d.label)}</span><span class="when">${esc(d.extra || "")}</span></li>`).join("")}</ul>` : empty("Sin documentos todavía.")}</div>
+        <div class="card"><h4>Contactos</h4>${v.contacts.length ? kv(v.contacts) : empty("Sin contactos guardados.")}</div>
+      </div>
+    </div>`;
+
+  if (slug === "viajes") $("trip-slot").appendChild(tripPanel);
+  wireTopic(slug, v);
 }
 
-async function loadTasks(status) {
-  const list = $(status === "open" ? "open-list" : "done-list");
-  const tasks = await api(`/api/tasks?status=${status}`);
-  list.innerHTML = tasks.length ? tasks.map(taskItem).join("") : `<li class="empty">Nada por aquí 🎉</li>`;
+/* ---------- correos recibidos ---------- */
+function mailsHTML(mails) {
+  if (!mails.length) return "";
+  const nNew = mails.filter((m) => m.state === "new").length;
+  const STATE = { new: `<span class="badge info">Nuevo</span>`, task: `<span class="badge">Tarea creada</span>`, replying: `<span class="badge warn">Respondiendo</span>`, done: `<span class="badge">Respondido</span>` };
+  return fold("mails-" + currentTopic, `<span class="fold-title">Correos recibidos</span>${nNew ? `<span class="fold-meta" style="color:var(--info)">${plural(nNew, "nuevo", "nuevos")}</span>` : ""}`,
+    mails.map((m) => `<div class="mail ${m.state === "new" ? "new" : ""}">
+      <div class="mail-top"><span><b style="color:var(--fg)">${esc(m.from_name)}</b> · ${esc(fmt(m.received_at))}${m.lang ? ` · en ${esc(m.lang.toLowerCase())}` : ""}</span>${STATE[m.state] || ""}</div>
+      <div class="mail-subj">${esc(m.subject)}</div>
+      <dl class="intent"><dt>Qué quieren</dt><dd>${esc(m.intent)}</dd><dt>Qué hacer</dt><dd><b>${esc(m.todo)}</b></dd>${m.due ? `<dt>Plazo</dt><dd>${dueBadge(m.due)} ${esc(fmt(m.due))}</dd>` : ""}</dl>
+      <div class="actions">
+        ${m.state === "new" ? `<button class="btn" type="button" data-mail="task" data-m="${m.id}">Crear tarea</button>` : ""}
+        ${m.state !== "done" ? `<button class="btn light" type="button" data-mail="reply" data-m="${m.id}">Responder</button>` : ""}
+        <button class="link" type="button" data-mail="archive" data-m="${m.id}">Archivar</button>
+      </div></div>`).join(""));
 }
 
-async function loadTopics() {
-  const topics = await api("/api/topics");
-  $("topics").innerHTML = topics.map((t) => `<div class="topic">
-      <h3>${esc(t.icon || "")} ${esc(t.name)}</h3>
-      <p>${esc(t.status_summary || "Sin estado todavía")}</p>
-    </div>`).join("");
-  $("email-topic").innerHTML = `<option value="">— Ninguno —</option>` +
-    topics.map((t) => `<option value="${esc(t.slug)}">${esc(t.icon || "")} ${esc(t.name)}</option>`).join("");
+/* ---------- eventos (colegio y otros) ---------- */
+function eventsHTML(events) {
+  const evs = [...events].sort((a, b) => (a.date < b.date ? -1 : 1));
+  return `<div class="card" id="events"><div class="card-top"><h4>Eventos</h4><span class="badge mute">Sacados de los correos</span></div>
+    <div class="cards">${evs.map((ev) => `<div class="card" style="background:var(--bg)">
+      <div class="card-top"><div class="avatar">${D(ev.date).getDate()}</div>${ev.in_calendar ? `<span class="badge">En el calendario</span>` : dueBadge(ev.date)}</div>
+      <h3>${esc(ev.title)}</h3>
+      <p>${esc(fmtLong(ev.date))}${ev.time ? ` · ${esc(ev.time)}` : ""}${ev.who || ev.place ? `<br>${esc([ev.who, ev.place].filter(Boolean).join(" · "))}` : ""}${ev.note ? `<br><b style="color:var(--fg)">${esc(ev.note)}</b>` : ""}</p>
+      ${ev.in_calendar
+        ? `<span class="note-ok">✓ En el calendario${ev.attendee ? ` · ${ATTEND_TXT[ev.attendee]}` : ""}</span><button class="link" type="button" data-ev-undo="${ev.id}" style="justify-self:start">Quitar del calendario</button>`
+        : `<label for="att-${ev.id}">¿Quién va?<select id="att-${ev.id}" data-ev-att="${ev.id}">${Object.entries(ATTEND).map(([k, l]) => `<option value="${k}" ${(ev.attendee || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+           <button class="btn" type="button" data-ev-send="${ev.id}" ${ev.attendee ? "" : "disabled"} style="justify-self:start">Añadir al calendario</button>`}
+    </div>`).join("")}</div></div>`;
 }
 
-// Completar / reabrir
-document.addEventListener("change", async (e) => {
-  const cb = e.target;
-  if (!cb.matches("input[type=checkbox][data-id]")) return;
-  await api(`/api/tasks/${cb.dataset.id}`, { method: "PATCH", body: JSON.stringify({ status: cb.checked ? "done" : "open" }) });
-  loadTasks("open"); loadTasks("done");
+/* ---------- gastos y suscripciones (Finanzas) ---------- */
+const perMonth = (e) => (e.cycle === "mes" ? e.amount : e.cycle === "año" ? e.amount / 12 : e.amount / 3);
+function dashboardHTML() {
+  const E = S.expenses;
+  if (!E.length) return fold("subs", `<span class="fold-title">Suscripciones</span>`, subsBody([]));
+  const fixedM = E.filter((e) => !e.sub).reduce((s, e) => s + perMonth(e), 0);
+  const subs = E.filter((e) => e.sub);
+  const subsM = subs.reduce((s, e) => s + perMonth(e), 0);
+  const cats = {}; E.forEach((e) => (cats[e.cat] = (cats[e.cat] || 0) + perMonth(e)));
+  const max = Math.max(...Object.values(cats));
+  const upcoming = E.filter((e) => e.next && daysTo(e.next) >= 0 && daysTo(e.next) <= 14).length;
+  const rows = [...E].sort((a, b) => perMonth(b) - perMonth(a));
+  const flagged = subs.filter((e) => e.flag).length;
+  return fold("gastos", `<span class="fold-title">Vista general de gastos</span><span class="fold-meta">${eur(fixedM + subsM)} al mes</span>`,
+    `<div class="kpis">
+      <div class="kpi"><div class="lbl">Gastos fijos al mes</div><div class="stat">${eur(fixedM)}</div><div class="foot">Anuales y trimestrales prorrateados</div></div>
+      <div class="kpi"><div class="lbl">Suscripciones al mes</div><div class="stat">${eur(subsM)}</div><div class="foot">${plural(subs.length, "activa", "activas")}</div></div>
+      <div class="kpi"><div class="lbl">Total al año</div><div class="stat">${eur((fixedM + subsM) * 12)}</div><div class="foot">${plural(upcoming, "cargo", "cargos")} en los próximos 14 días</div></div>
+    </div>
+    <h4>Por categoría, al mes</h4>
+    <div class="bars">${Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => `
+      <div class="bar-row"><span>${esc(c)}</span><div class="bar-track"><div class="bar-fill" style="width:${((v / max) * 100).toFixed(1)}%"></div></div><span class="amt">${eur(v)}</span></div>`).join("")}</div>
+    <h4>Todos los cargos</h4>
+    <div class="table-wrap"><table class="subs"><thead><tr><th>Concepto</th><th class="num">Importe</th><th class="num">Al mes</th><th>Próximo cargo</th><th>Cancelación</th></tr></thead><tbody>
+      ${rows.map((e) => `<tr><td>${esc(e.name)}<div class="sub">${esc(e.cat)}${e.sub ? " · suscripción" : ""}</div></td>
+        <td class="num">${eur(e.amount)}<div class="sub">/${e.cycle}</div></td><td class="num">${eur(perMonth(e))}</td>
+        <td>${e.next ? fmt(e.next) : "—"}</td><td>${esc(e.notice || "")}</td></tr>`).join("")}
+    </tbody></table></div>`)
+  + fold("subs", `<span class="fold-title">Suscripciones</span><span class="fold-meta">${subs.length} · ${eur(subsM)} al mes${flagged ? ` · <span style="color:var(--warn)">${flagged} por revisar</span>` : ""}</span>`, subsBody(subs));
+}
+function subsBody(subs) {
+  return `<ul class="sub-list">${[...subs].sort((a, b) => ((a.next || "9") < (b.next || "9") ? -1 : 1)).map((e) => `<li class="${e.flag ? "flag" : ""}">
+      <div class="sl-main"><b>${esc(e.name)}</b><span>${eur(e.amount)} /${e.cycle}${e.next ? ` · próximo cargo ${fmt(e.next)}` : ""} · cancelación: ${esc((e.notice || "").toLowerCase())}</span>
+        ${e.flag ? `<span class="sl-flag">${esc(e.flag)}</span>` : ""}</div>
+      <div class="sl-act"><button class="link" type="button" data-cancel="${esc(e.name)}">Email de baja</button><button class="link danger" type="button" data-sub-del="${e.id}">Quitar</button></div>
+    </li>`).join("") || `<li><span class="note-sim">No hay suscripciones.</span></li>`}</ul>
+    <form class="sub-form" id="sub-form">
+      <h4>Añadir suscripción</h4>
+      <div class="fields">
+        <label for="sf-name">Nombre<input type="text" id="sf-name" placeholder="p. ej. Streaming deportes" required></label>
+        <label for="sf-amount">Importe (€)<input type="text" id="sf-amount" inputmode="decimal" placeholder="9,99" required></label>
+        <label for="sf-cycle">Se cobra<select id="sf-cycle"><option value="mes">Cada mes</option><option value="trimestre">Cada trimestre</option><option value="año">Cada año</option></select></label>
+        <label for="sf-next">Próximo cargo<input type="date" id="sf-next" value="${addDays(30)}"></label>
+        <label for="sf-notice">Cancelación<input type="text" id="sf-notice" placeholder="En cualquier momento"></label>
+      </div>
+      <div class="actions"><button class="btn" type="submit">Añadir</button></div>
+    </form>`;
+}
+
+/* ---------- redactor de emails ---------- */
+function composerHTML(slug) {
+  const t = topicBySlug(slug), dr = drafts[slug];
+  const langOpts = (l) => Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${k === l ? "selected" : ""}>${v}</option>`).join("");
+  let out = "";
+  if (dr?.stage === "loading") {
+    out = `<div class="composer-out"><span class="note-sim">Claude está escribiendo el borrador…</span></div>`;
+  } else if (dr?.stage === "sent") {
+    out = `<div class="composer-out"><span class="note-ok">✓ Anotado como enviado. Hay una tarea para revisar la respuesta en 2 semanas.</span>
+      <div class="actions"><button class="link" type="button" data-act="new">Escribir otro email</button></div></div>`;
+  } else if (dr) {
+    const mailto = `mailto:${encodeURIComponent(dr.to || "")}?subject=${encodeURIComponent(dr.subject)}&body=${encodeURIComponent(dr.body)}`;
+    out = `<div class="composer-out ${dr.working ? "busy" : ""}">
+      ${dr.mailId ? `<span class="badge info" style="justify-self:start">Respuesta a un correo recibido</span>` : ""}
+      <label for="c-to">Para<input type="email" id="c-to" value="${esc(dr.to)}" placeholder="dirección del destinatario"></label>
+      <label for="c-subj">Asunto<input type="text" id="c-subj" value="${esc(dr.subject)}"></label>
+      <label for="c-body">Texto (puedes corregirlo directamente)<textarea id="c-body" rows="12">${esc(dr.body)}</textarea></label>
+      <form class="revise" id="c-revise"><input type="text" id="c-instr" placeholder="Pide cambios: «pásalo a inglés», «más corto»…" aria-label="Pedir cambios"><button class="btn light" type="submit">Aplicar</button></form>
+      ${dr.msg ? `<span class="note-sim">${esc(dr.msg)}</span>` : ""}
+      ${dr.stage === "confirm"
+        ? `<div class="confirm"><span>¿Ya lo has enviado? Se guardará en el historial y se creará un recordatorio para revisar la respuesta.</span>
+            <div class="actions"><button class="btn" type="button" data-act="sent-ok">Sí, enviado</button><button class="link" type="button" data-act="sent-no">Todavía no</button></div></div>`
+        : `<div class="actions"><a class="btn" id="c-mailto" href="${mailto}">Abrir en el correo</a><button class="btn light" type="button" data-act="copy">Copiar</button><button class="btn light" type="button" data-act="mark">Marcar como enviado</button><button class="link danger" type="button" data-act="discard">Descartar</button></div>`}
+    </div>`;
+  }
+  return `<div class="card" id="composer"><h4>Escribir un email</h4>
+    <p>Para resolver este tema, en el idioma que quieras. Déjalo en blanco y Claude propone uno a partir del próximo paso.</p>
+    <form id="c-form" style="display:grid;gap:10px">
+      <textarea id="c-req" rows="2" placeholder="¿Qué quieres conseguir?" aria-label="Qué quieres conseguir">${esc(dr && !dr.mailId ? dr.request || "" : "")}</textarea>
+      <div class="actions"><select id="c-lang" aria-label="Idioma" style="width:auto">${langOpts(dr?.lang || t.email_lang || "de")}</select><button class="btn" type="submit">Redactar</button></div>
+    </form>${out}</div>`;
+}
+async function compose(slug, { request = "", lang, mailId } = {}) {
+  drafts[slug] = { stage: "loading", request, lang, mailId };
+  if (currentTopic === slug) renderTopic(slug);
+  try {
+    const d = await post("/api/draft", { topic: slug, request, lang, mailId });
+    drafts[slug] = { stage: "draft", request, lang: d.lang, mailId, to: d.to, subject: d.subject, body: d.body, msg: "" };
+  } catch (e) {
+    delete drafts[slug]; say("⚠ " + e.message, true);
+  }
+  if (currentTopic === slug) renderTopic(slug);
+}
+function copyText(text, btn, okLabel = "Copiado") {
+  const done = () => { if (btn) btn.textContent = okLabel; };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done).catch(() => say("No se pudo copiar automáticamente: selecciónalo y cópialo.", true));
+  else say("No se pudo copiar automáticamente: selecciónalo y cópialo.", true);
+}
+
+/* ---------- eventos de la ficha ---------- */
+function wireTopic(slug, v) {
+  const box = $("topic-detail");
+  box.querySelectorAll("[data-fold]").forEach((f) => f.addEventListener("toggle", () => (uiOpen[f.dataset.fold] = f.open)));
+
+  $("note-form").addEventListener("submit", (e) => {
+    e.preventDefault(); const text = $("note-text").value.trim(); if (!text) return;
+    act(() => post(`/api/topics/${slug}/note`, { text }), "Nota guardada.");
+  });
+
+  // correos
+  box.querySelectorAll("[data-mail]").forEach((b) => b.addEventListener("click", async () => {
+    const id = +b.dataset.m, a = b.dataset.mail;
+    if (a === "task") act(() => post(`/api/mails/${id}`, { action: "task" }), "Tarea creada.");
+    if (a === "archive") act(() => post(`/api/mails/${id}`, { action: "archive" }), "Correo archivado.");
+    if (a === "reply") { compose(slug, { mailId: id }); $("composer").scrollIntoView({ block: "start", behavior: "smooth" }); }
+  }));
+
+  // eventos
+  $("events")?.addEventListener("change", (e) => {
+    const id = e.target.dataset.evAtt; if (!id) return;
+    act(() => post(`/api/events/${id}`, { attendee: e.target.value }));
+  });
+  $("events")?.addEventListener("click", (e) => {
+    const s = e.target.closest("[data-ev-send]"), u = e.target.closest("[data-ev-undo]");
+    if (s) act(() => post(`/api/events/${s.dataset.evSend}`, { in_calendar: true }), "Añadido al calendario de los dos.");
+    if (u) act(() => post(`/api/events/${u.dataset.evUndo}`, { in_calendar: false }), "Quitado del calendario.");
+  });
+
+  // suscripciones
+  $("sub-form")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = $("sf-name").value.trim(), amount = parseFloat($("sf-amount").value.replace(/\./g, "").replace(",", "."));
+    if (!name || !(amount > 0)) { say("Escribe el nombre y un importe mayor que 0.", true); return; }
+    uiOpen.subs = true;
+    act(() => post("/api/expenses", { name, amount, cycle: $("sf-cycle").value, next: $("sf-next").value, notice: $("sf-notice").value }), `Suscripción «${name}» añadida.`);
+  });
+  box.querySelectorAll("[data-sub-del]").forEach((b) => b.addEventListener("click", () => act(() => post(`/api/expenses/${b.dataset.subDel}`, {}, "DELETE"), "Suscripción quitada.")));
+  box.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", () => {
+    compose(slug, { request: `Cancelar mi suscripción a «${b.dataset.cancel}» con efecto en la próxima renovación y pedir confirmación por escrito. Deja el destinatario en blanco.`, lang: "es" });
+    $("composer").scrollIntoView({ block: "start", behavior: "smooth" });
+  }));
+
+  // redactor
+  $("c-form").addEventListener("submit", (e) => {
+    e.preventDefault(); compose(slug, { request: $("c-req").value.trim(), lang: $("c-lang").value });
+  });
+  const dr = drafts[slug]; if (!dr || dr.stage === "loading") return;
+  [["c-to", "to"], ["c-subj", "subject"], ["c-body", "body"]].forEach(([id, k]) => $(id)?.addEventListener("input", (e) => {
+    dr[k] = e.target.value;
+    const a = $("c-mailto"); if (a) a.href = `mailto:${encodeURIComponent(dr.to || "")}?subject=${encodeURIComponent(dr.subject)}&body=${encodeURIComponent(dr.body)}`;
+  }));
+  $("c-revise")?.addEventListener("submit", async (e) => {
+    e.preventDefault(); const instruction = $("c-instr").value.trim(); if (!instruction) return;
+    dr.working = true; dr.msg = "Aplicando los cambios…"; renderTopic(slug);
+    try {
+      const r = await post("/api/draft/revise", { subject: dr.subject, body: dr.body, lang: dr.lang, instruction });
+      Object.assign(dr, { subject: r.subject, body: r.body, lang: r.lang, msg: `Cambiado: «${instruction}».` });
+    } catch (err) { dr.msg = "⚠ " + err.message; }
+    dr.working = false; renderTopic(slug);
+  });
+  $("composer").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act]")?.dataset.act; if (!a) return;
+    if (a === "copy") return copyText(`${dr.subject}\n\n${dr.body}`, e.target);
+    if (a === "mark") { dr.stage = "confirm"; return renderTopic(slug); }
+    if (a === "sent-no") { dr.stage = "draft"; return renderTopic(slug); }
+    if (a === "discard" || a === "new") { delete drafts[slug]; return renderTopic(slug); }
+    if (a === "sent-ok") {
+      act(() => post("/api/draft/sent", { topic: slug, subject: dr.subject, to: dr.to, mailId: dr.mailId }), "Email anotado como enviado.")
+        .then(() => { drafts[slug] = { stage: "sent" }; renderTopic(slug); }).catch(() => {});
+    }
+  });
+  $("c-mailto")?.addEventListener("click", () => setTimeout(() => { dr.stage = "confirm"; renderTopic(slug); }, 800));
+}
+
+/* =========================================================
+   NAVEGACIÓN
+   ========================================================= */
+function showTab(name) {
+  if (name !== "tema") currentTopic = null;
+  $("tab-temas").hidden = name !== "temas";
+  $("tab-tema").hidden = name !== "tema";
+}
+function openTopic(slug, { scrollTo } = {}) {
+  currentTopic = slug; showTab("tema"); renderTopic(slug);
+  (scrollTo ? $(scrollTo) : $("tab-tema"))?.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-topic]");
+  if (b && (b.closest("#groups") || b.closest("#alert-list"))) openTopic(b.dataset.topic);
 });
+$("back-topics").addEventListener("click", () => { showTab("temas"); renderAll(); window.scrollTo({ top: 0 }); });
+document.addEventListener("change", (e) => {
+  const id = e.target.dataset?.task; if (!id) return;
+  act(() => post(`/api/tasks/${id}`, { status: e.target.checked ? "done" : "open" }, "PATCH"));
+});
+["overview", "calendar"].forEach((id) => $(id).addEventListener("toggle", () => (uiOpen[id] = $(id).open)));
 
-// Entrada rápida
+async function refresh(showMsg) {
+  const b = $("refresh"); b.classList.add("spin");
+  try {
+    const before = S ? S.mails.length + S.tasks.length : 0;
+    await load(); renderAll();
+    if (showMsg) { const diff = S.mails.length + S.tasks.length - before; say(diff > 0 ? `Hay ${plural(diff, "entrada nueva", "entradas nuevas")}.` : "Todo al día: no ha llegado nada nuevo."); }
+  } catch (e) { say("⚠ " + e.message, true); }
+  b.classList.remove("spin");
+}
+$("refresh").addEventListener("click", () => refresh(true));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S) refresh(false); });
+
+/* ---------- entrada rápida ---------- */
+const norm = (x) => x.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+const ALIASES = { finanzas: /finanz|impuest/, "casa-valle": /valle/, "casa-berlin": /casa berlin|piso de berlin/, colegio: /colegio/, viajes: /viaje/, "rente-s": /sabrina/, "rente-g": /gonzalo/, morean: /morean/ };
+function findTopic(text) {
+  const n = norm(text);
+  return S.topics.find((t) => n.includes(norm(t.name))) || S.topics.find((t) => ALIASES[t.slug]?.test(n));
+}
 $("quick").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const text = $("quick-text").value.trim();
-  if (!text) return;
+  const input = $("quick-text"), text = input.value.trim(); if (!text || !S) return;
+  const t = findTopic(text);
+  if (t && /\b(mail|email|correo|escrib|redact)/i.test(text)) {
+    const lang = /ingl|english/i.test(text) ? "en" : /espa/i.test(text) ? "es" : /alem/i.test(text) ? "de" : undefined;
+    input.value = ""; openTopic(t.slug, { scrollTo: "composer" });
+    say(`Claude está escribiendo un borrador en ${t.name}…`);
+    await compose(t.slug, { lang }); say(`Borrador listo en ${t.name}. Revísalo y decide qué hacer con él.`);
+    return;
+  }
+  if (t && /^(abre|ver|muestra|ir a)\b/i.test(text)) { input.value = ""; openTopic(t.slug); return; }
   const btn = $("quick-btn"); btn.disabled = true; btn.textContent = "…";
   try {
-    const r = await api("/api/inbox", { method: "POST", body: JSON.stringify({ text }) });
-    $("quick-text").value = "";
-    $("quick-result").hidden = false;
-    $("quick-result").textContent = r.kind === "task"
-      ? `✔ Tarea: «${r.title}» → ${r.topic_slug}${r.due_date ? ", " + fmtDate(r.due_date) : ""}`
-      : `✔ Nota guardada en ${r.topic_slug}`;
-    loadTasks("open"); loadTopics();
-  } catch (err) {
-    $("quick-result").hidden = false; $("quick-result").textContent = "⚠ " + err.message;
-  } finally { btn.disabled = false; btn.textContent = "Añadir"; }
+    const r = await act(() => post("/api/inbox", { text }));
+    input.value = "";
+    say(r.kind === "task" ? `Tarea añadida a ${r.topic_name}${r.due_date ? ", para el " + fmt(r.due_date) : ""}.` : `Guardado en el historial de ${r.topic_name}.`);
+  } catch { /* ya se muestra el error */ }
+  btn.disabled = false; btn.textContent = "Enviar";
 });
 
-// Email en alemán
-$("email-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const btn = $("email-btn"); btn.disabled = true; btn.textContent = "Redactando…";
-  try {
-    const { draft } = await api("/api/draft-email", {
-      method: "POST",
-      body: JSON.stringify({ request: $("email-request").value, topic_slug: $("email-topic").value }),
-    });
-    $("email-draft").textContent = draft; $("email-draft").hidden = false; $("email-copy").hidden = false;
-  } catch (err) {
-    $("email-draft").textContent = "⚠ " + err.message; $("email-draft").hidden = false;
-  } finally { btn.disabled = false; btn.textContent = "Redactar en alemán"; }
+/* =========================================================
+   VIAJE (dentro del tema Viajes; vuelos y tiempo de ejemplo)
+   ========================================================= */
+const tripPanel = $("trip-panel");
+const CITIES = {
+  lisboa: { name: "Lisboa", min: 9, max: 15, rain: 4, snow: false, h: "3 h 50", base: 140 },
+  madrid: { name: "Madrid", min: 3, max: 11, rain: 2, snow: false, h: "3 h 15", base: 120 },
+  tenerife: { name: "Tenerife", min: 16, max: 22, rain: 1, snow: false, h: "5 h 30", base: 210 },
+  viena: { name: "Viena", min: -2, max: 3, rain: 3, snow: true, h: "1 h 10", base: 90 },
+  londres: { name: "Londres", min: 4, max: 9, rain: 5, snow: false, h: "1 h 55", base: 110 },
+};
+$("dest").innerHTML = Object.entries(CITIES).map(([k, c]) => `<option value="${k}">${c.name}</option>`).join("");
+const PEOPLE = [
+  { key: "g", name: "Gonzalo", kind: "adulto", on: true },
+  { key: "s", name: "Sabrina", kind: "adulto", on: true },
+  { key: "h1", name: "Hijo 1", kind: "niño", age: 8, on: true },
+  { key: "h2", name: "Hijo 2", kind: "niño", age: 6, on: true },
+  { key: "h3", name: "Hijo 3", kind: "niño", age: 1, on: false },
+];
+const trip = { flight: null };
+const going = () => PEOPLE.filter((p) => p.on);
+function renderTravelers() {
+  $("travelers").innerHTML = PEOPLE.map((p) => `<div class="trav ${p.on ? "on" : ""}">
+    <label for="tv-${p.key}"><input type="checkbox" id="tv-${p.key}" data-trav="${p.key}" ${p.on ? "checked" : ""}>${p.name}</label>
+    ${p.kind === "niño" ? `<select id="tva-${p.key}" data-trav-age="${p.key}" aria-label="Edad de ${p.name}">${Array.from({ length: 18 }, (_, n) => `<option value="${n}" ${n === p.age ? "selected" : ""}>${n} años</option>`).join("")}</select>` : ""}
+  </div>`).join("");
+}
+$("travelers").addEventListener("change", (e) => {
+  e.stopPropagation();
+  const k = e.target.dataset.trav, a = e.target.dataset.travAge;
+  if (k) PEOPLE.find((p) => p.key === k).on = e.target.checked;
+  if (a) PEOPLE.find((p) => p.key === a).age = +e.target.value;
+  renderTravelers();
 });
-$("email-copy").addEventListener("click", () => navigator.clipboard.writeText($("email-draft").textContent.split("\n---")[0]));
+function goStep(n) {
+  [1, 2, 3, 4].forEach((i) => ($("trip-" + i).hidden = i !== n));
+  [...$("steps").children].forEach((s, i) => { s.classList.toggle("on", i === n - 1); s.classList.toggle("ok", i < n - 1); });
+}
+tripPanel.querySelectorAll("[data-back]").forEach((b) => b.addEventListener("click", () => goStep(+b.dataset.back)));
+const nights = () => Math.max(1, Math.round((new Date($("d2").value) - new Date($("d1").value)) / 864e5));
+const payers = () => going().filter((p) => p.kind === "adulto" || p.age >= 2).length;
+const whoGoes = () => going().map((p) => p.name + (p.kind === "niño" ? ` (${p.age})` : "")).join(", ");
+$("search").addEventListener("click", () => {
+  if (!going().length) { say("Marca al menos una persona.", true); return; }
+  const c = CITIES[$("dest").value], babies = going().filter((p) => p.kind === "niño" && p.age < 2).length;
+  trip.opts = [
+    { label: "Directo", time: "07:10", dur: c.h, bag: "Solo equipaje de mano", p: c.base },
+    { label: "Directo", time: "13:45", dur: c.h, bag: "Incluye 1 maleta facturada", p: Math.round(c.base * 1.35) },
+    { label: "1 escala", time: "09:30", dur: "≈ 6 h", bag: "Incluye 1 maleta facturada", p: Math.round(c.base * 0.8) },
+  ];
+  trip.flight = null; $("to-book").disabled = true;
+  $("flights-title").textContent = `Berlín → ${c.name} · ${fmt($("d1").value)} – ${fmt($("d2").value)} · ${whoGoes()}`;
+  $("flights").innerHTML = trip.opts.map((o, i) => `<button type="button" class="card flight" data-f="${i}" style="background:var(--bg)">
+    <div class="card-top"><div class="avatar">${o.label === "Directo" ? "D" : "1"}</div><span class="badge ${o.bag.startsWith("Solo") ? "mute" : ""}">${o.bag.startsWith("Solo") ? "Solo mano" : "Con maleta"}</span></div>
+    <h3>Salida ${o.time}</h3><p>${o.label} · ${o.dur} · ${o.bag}</p>
+    <div class="price">${o.p * payers()} €</div><div class="foot">${o.p} € × ${plural(payers(), "asiento", "asientos")}${babies ? ` · ${babies} bebé en brazos sin asiento` : ""}</div></button>`).join("");
+  goStep(2);
+});
+$("flights").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-f]"); if (!b) return;
+  trip.flight = trip.opts[+b.dataset.f];
+  [...$("flights").children].forEach((x) => x.classList.toggle("sel", x === b));
+  $("to-book").disabled = false;
+});
+$("to-book").addEventListener("click", () => {
+  const c = CITIES[$("dest").value], f = trip.flight;
+  $("book-summary").innerHTML = `<div class="card-top"><div class="avatar">${c.name[0]}</div><span class="badge warn">Por reservar</span></div>
+    <h3>Berlín → ${c.name}</h3>
+    <p>Salida ${fmt($("d1").value)} a las ${f.time}, vuelta ${fmt($("d2").value)}.<br>Viajan: ${esc(whoGoes())}.<br>${f.bag}.</p>
+    <div class="price">${f.p * payers()} €</div><div class="foot">Total estimado</div>`;
+  goStep(3);
+});
+function packFor(c, n, p) {
+  const days = Math.min(n, 4), cold = c.min <= 5, warm = c.max >= 20, rain = c.rain >= 3, items = [];
+  items.push(`${days + 1} mudas de ropa interior y calcetines`, `${days} camisetas`, `${cold ? 2 : 1} pantalón${cold ? "es" : ""} (más el puesto)`);
+  if (cold) items.push("Abrigo de invierno (puesto en el viaje)", "1 jersey", "Gorro, guantes y bufanda");
+  else if (!warm) items.push("Chaqueta ligera (puesta en el viaje)");
+  if (c.snow) items.push("Botas impermeables (puestas)");
+  if (warm) items.push("Bañador", "Gorra", "Protector solar (uno para todos)");
+  if (rain) items.push(p.kind === "adulto" ? "Paraguas plegable" : "Chubasquero fino");
+  items.push("Pijama");
+  if (p.kind === "niño") {
+    if (p.age < 2) items.push(`Pañales para ${n + 2} días`, "Toallitas", "Cambiador de viaje");
+    if (p.age < 5) items.push("Muñeco para dormir"); else items.push("Un libro o juego para el avión");
+  } else items.push("Documento de identidad", "Cargador del móvil");
+  if (n > 4) items.push("Detergente en hojas o sobres (uno para todos)");
+  return items;
+}
+$("booked").addEventListener("click", async () => {
+  const c = CITIES[$("dest").value], d1 = $("d1").value, d2 = $("d2").value, n = nights();
+  const handOnly = trip.flight.bag.startsWith("Solo");
+  let r;
+  try { r = await act(() => post("/api/trips/book", { dest: c.name, d1, d2, who: whoGoes(), count: going().length, handOnly })); } catch { return; }
+  const people = going();
+  const cold = c.min <= 5, perL = (cold ? 16 : 10) + Math.min(n, 4) * 2;
+  const totalL = people.reduce((s, p) => s + (p.kind === "niño" ? (p.age < 2 ? perL * 0.8 : perL * 0.6) : perL), 0);
+  const carry = Math.ceil(totalL / 40);
+  const fitsCarry = carry <= payers();
+  $("trip-ok").innerHTML = `<b>Viaje guardado.</b> En Tareas tienes el check-in online (${fmt(r.checkin)}) y hacer maletas (${fmt(r.pack)})${handOnly ? ", y añadir una maleta facturada si al final la necesitáis" : ""}.`;
+  $("wx").innerHTML = `
+    <div class="card" style="background:var(--bg)"><div class="card-top"><div class="avatar">${c.name[0]}</div><span class="badge ${cold ? "warn" : ""}">${cold ? "Frío" : c.max >= 20 ? "Calor" : "Templado"}</span></div>
+      <h3>Tiempo habitual en ${c.name}</h3><div class="stat">${c.min}° / ${c.max}°</div>
+      <p>Lluvia ${c.rain} de cada 8 días${c.snow ? ". Nieve probable" : ""}. Valores de ejemplo.</p></div>
+    <div class="card" style="background:var(--bg)"><div class="card-top"><div class="avatar">M</div><span class="badge">${plural(people.length, "persona", "personas")} · ${plural(n, "noche", "noches")}</span></div>
+      <h3>Equipaje mínimo</h3><div class="stat">${plural(carry, "maleta", "maletas")} de mano</div>
+      <p>≈ ${Math.round(totalL)} litros en total. ${fitsCarry ? "Os basta con equipaje de mano, sin facturar." : "No cabe todo en mano: facturad una maleta grande."}${n > 4 ? " Se cuenta con poner una lavadora." : ""}</p></div>`;
+  $("packing").innerHTML = people.map((p) => `<div class="card" style="background:var(--bg)">
+    <div class="card-top"><div class="avatar">${p.name[0]}</div><span class="badge mute">${p.kind === "niño" ? p.age + " años" : "Adulto"}</span></div>
+    <h3>${esc(p.name)}</h3>
+    <ul class="checklist">${packFor(c, n, p).map((it, ii) => `<li><input type="checkbox" id="pk-${p.key}-${ii}"><label for="pk-${p.key}-${ii}">${esc(it)}</label></li>`).join("")}</ul></div>`).join("");
+  goStep(4);
+});
 
-// Pestañas
-document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x === b));
-  document.querySelectorAll("main section").forEach((s) => (s.hidden = s.id !== "tab-" + b.dataset.tab));
-}));
-
-// Inicio
+/* ---------- inicio ---------- */
+renderTravelers();
 (async () => {
-  try {
-    const me = await api("/api/me");
-    $("me").textContent = me.email;
-    await Promise.all([loadTasks("open"), loadTasks("done"), loadTopics()]);
-  } catch (err) {
-    document.querySelector("main").innerHTML = `<p class="empty">⚠ ${esc(err.message)}</p>`;
-  }
+  try { await load(); renderAll(); }
+  catch (e) { $("groups").innerHTML = `<p class="loading">⚠ ${esc(e.message)}</p>`; }
 })();
