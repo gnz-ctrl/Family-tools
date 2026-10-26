@@ -53,6 +53,11 @@ const MIGRATIONS: string[][] = [
     `INSERT OR IGNORE INTO topics (slug, name) VALUES ('eventos', 'Eventos familiares')`,
     `UPDATE topics SET sort = CASE slug WHEN 'finanzas' THEN 1 WHEN 'casa-valle' THEN 2 WHEN 'casa-berlin' THEN 3 WHEN 'colegio' THEN 4 WHEN 'viajes' THEN 5 WHEN 'eventos' THEN 6 WHEN 'rente-s' THEN 7 WHEN 'rente-g' THEN 8 WHEN 'documentos' THEN 9 ELSE sort END`,
   ],
+  // 6 · temas privados (solo los ve una persona) y color de tarjeta por persona
+  [
+    `ALTER TABLE topics ADD COLUMN private_to TEXT`,
+    `CREATE TABLE IF NOT EXISTS topic_colors (email TEXT NOT NULL, topic_id INTEGER NOT NULL REFERENCES topics(id), color TEXT NOT NULL, PRIMARY KEY (email, topic_id))`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

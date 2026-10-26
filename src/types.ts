@@ -29,6 +29,10 @@ export interface Topic {
   email_ref: string | null;
   owner: string | null;
   sort: number;
+  /** Email de la única persona que lo ve; null = compartido */
+  private_to: string | null;
+  /** Color de la tarjeta elegido por el usuario actual */
+  color?: string | null;
 }
 
 export interface User { email: string; name: string; fullName: string }

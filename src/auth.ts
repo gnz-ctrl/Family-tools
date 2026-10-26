@@ -5,7 +5,8 @@ import type { Env } from "./types";
  * Falla cerrado: si Access no está configurado y no estamos en DEV_MODE, nadie entra.
  */
 export async function getUser(req: Request, env: Env): Promise<string | null> {
-  if (env.DEV_MODE === "true") return env.DEV_USER || "dev@local";
+  // Solo en local: permite probar como otro usuario con la cabecera x-dev-user
+  if (env.DEV_MODE === "true") return req.headers.get("x-dev-user") || env.DEV_USER || "dev@local";
 
   if (!env.ACCESS_TEAM || !env.ACCESS_AUD) return null;
   const token = req.headers.get("Cf-Access-Jwt-Assertion");

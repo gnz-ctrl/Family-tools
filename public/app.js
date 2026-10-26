@@ -72,7 +72,23 @@ function dueBadge(d) {
 const fold = (key, summary, body, defOpen = false, id = "") => `<details class="fold" data-fold="${key}" ${id ? `id="${id}"` : ""} ${(uiOpen[key] ?? defOpen) ? "open" : ""}>
   <summary>${summary}<span class="chev" aria-hidden="true">▾</span></summary><div class="fold-body">${body}</div></details>`;
 const foldTitle = (title, meta = "") => `<span class="fold-title">${title}</span>${meta ? `<span class="fold-meta">${meta}</span>` : ""}`;
-let pendingTaskDel = null, creatingTopic = false, editingTopic = null, deletingTopic = null;
+let pendingTaskDel = null, creatingTopic = false, editingTopic = null, deletingTopic = null, editingTask = null, sharingTopic = null;
+const COLORS = ["", "mint", "sky", "lilac", "peach", "sand", "rose", "sage", "slate"];
+const COLOR_NAMES = { "": "Blanco", mint: "Menta", sky: "Cielo", lilac: "Lila", peach: "Melocotón", sand: "Arena", rose: "Rosa", sage: "Salvia", slate: "Pizarra" };
+const otherUser = () => S.users.find((u) => u.email !== S.me);
+const lock = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+/** Formulario para editar o mover una tarea */
+function taskEditForm(t, tag = "li") {
+  const topics = S.topics.filter((x) => x.slug !== "documentos");
+  const who = [...S.users.map((u) => [u.email, u.name]), ["both", "Los dos"]];
+  return `<${tag} class="tedit"><form class="task-edit" data-task-form="${t.id}">
+    <input type="text" name="title" value="${esc(t.title)}" aria-label="Tarea">
+    <select name="topic" aria-label="Tema"><option value="">Sin tema</option>${topics.map((x) => `<option value="${x.slug}" ${x.id === t.topic_id ? "selected" : ""}>${esc(x.name)}${x.private_to ? " (privado)" : ""}</option>`).join("")}</select>
+    <input type="date" name="due" value="${t.due_date || ""}" aria-label="Fecha límite">
+    <select name="assignee" aria-label="Para quién">${who.map(([v, l]) => `<option value="${v}" ${t.assignee === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+    <span class="actions"><button class="btn" type="submit">Guardar</button><button class="link" type="button" data-task-edit-cancel>Cancelar</button></span>
+  </form></${tag}>`;
+}
 
 /* =========================================================
    PORTADA
@@ -81,9 +97,9 @@ function renderAll() {
   if (!S) return;
   const open = S.tasks.filter((t) => t.status === "open").sort(byDue);
   const done = S.tasks.filter((t) => t.status === "done").sort((a, b) => (a.completed_at < b.completed_at ? 1 : -1)).slice(0, 30);
-  const row = (t) => `<li class="${t.status === "done" ? "done" : ""}">
+  const row = (t) => editingTask === t.id ? taskEditForm(t) : `<li class="${t.status === "done" ? "done" : ""}">
     <input type="checkbox" id="cb-${t.id}" data-task="${t.id}" ${t.status === "done" ? "checked" : ""} aria-label="Hecha">
-    <label class="tt" for="cb-${t.id}">${esc(t.title)}</label>
+    <button type="button" class="tt" data-task-edit="${t.id}" title="Editar o mover a otro tema">${esc(t.title)}</button>
     <span class="tm">${esc(tName(t.topic_id))}</span>
     <span class="tw">${esc(userName(t.status === "done" ? t.completed_by : t.assignee))}</span>
     <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span>
@@ -96,9 +112,10 @@ function renderAll() {
   $("groups").innerHTML = `<div class="cards topics-grid">${S.topics.map((t) => {
     const n = open.filter((x) => x.topic_id === t.id).length;
     const m = S.mails.filter((x) => x.topic_id === t.id && x.state === "new").length;
+    const cattr = t.color ? ` data-color="${esc(t.color)}"` : "";
     if (t.slug === "documentos") {
       const nf = (S.files || []).length;
-      return `<button type="button" class="card topic" data-topic="${t.slug}">
+      return `<button type="button" class="card topic" data-topic="${t.slug}"${cattr}>
       <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start"><span class="badge mute">${nf ? plural(nf, "archivo", "archivos") : "Vacío"}</span></div></button>`;
     }
     const badges = [
@@ -106,17 +123,19 @@ function renderAll() {
       n ? `<span class="badge warn">${plural(n, "pendiente", "pendientes")}</span>` : "",
       !m && !n ? (t.status_summary ? `<span class="badge">Al día</span>` : `<span class="badge mute">Sin novedades</span>`) : "",
     ].join("");
-    return `<button type="button" class="card topic" data-topic="${t.slug}">
-      <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${badges}</div></button>`;
+    return `<button type="button" class="card topic" data-topic="${t.slug}"${cattr}>
+      <h3 style="margin:0">${t.private_to ? `<span class="lock" title="Solo lo ves tú">${lock}</span>` : ""}${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${badges}</div></button>`;
   }).join("")}${creatingTopic
-    ? `<form class="card topic new-topic" id="new-topic"><input type="text" id="nt-name" placeholder="Nombre del tema" aria-label="Nombre del tema" maxlength="60"><div class="actions"><button class="btn" type="submit">Crear</button><button class="link" type="button" id="nt-cancel">Cancelar</button></div></form>`
+    ? `<form class="card topic new-topic" id="new-topic"><input type="text" id="nt-name" placeholder="Nombre del tema" aria-label="Nombre del tema" maxlength="60">
+      <label class="check" for="nt-private"><input type="checkbox" id="nt-private"> Solo para mí</label><div class="actions"><button class="btn" type="submit">Crear</button><button class="link" type="button" id="nt-cancel">Cancelar</button></div></form>`
     : `<button type="button" class="card topic new-topic" id="nt-open"><h3 style="margin:0">+ Nuevo tema</h3></button>`}</div>`;
   $("nt-open")?.addEventListener("click", () => { creatingTopic = true; renderAll(); $("nt-name").focus(); });
   $("nt-cancel")?.addEventListener("click", () => { creatingTopic = false; renderAll(); });
   $("new-topic")?.addEventListener("submit", (e) => {
     e.preventDefault(); const name = $("nt-name").value.trim(); if (!name) return;
     creatingTopic = false;
-    act(() => post("/api/topics", { name }), `Tema «${name}» creado.`).then((r) => r?.slug && openTopic(r.slug)).catch(() => {});
+    const priv = $("nt-private").checked;
+    act(() => post("/api/topics", { name, private: priv }), priv ? `Tema privado «${name}» creado: solo lo ves tú.` : `Tema «${name}» creado.`).then((r) => r?.slug && openTopic(r.slug)).catch(() => {});
   });
 
   renderCalendar();
@@ -197,20 +216,26 @@ function renderTopic(slug) {
         <label for="et-next">Próximo paso<input type="text" id="et-next" value="${esc(t.next_step || "")}"></label>
         <div class="fields"><label for="et-to">Email habitual del destinatario<input type="email" id="et-to" value="${esc(t.email_to || "")}"></label>
         <label for="et-lang">Idioma de los emails<select id="et-lang">${Object.entries(LANGS).map(([k, l]) => `<option value="${k}" ${(t.email_lang || "de") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div>
+        <div class="swatch-row"><span>Color de la tarjeta <small>(solo lo ves tú)</small></span>
+          <div class="swatches">${COLORS.map((c) => `<button type="button" class="swatch ${(t.color || "") === c ? "on" : ""}" ${c ? `data-color="${c}"` : ""} data-swatch="${c}" title="${COLOR_NAMES[c]}" aria-label="${COLOR_NAMES[c]}"></button>`).join("")}</div></div>
         <div class="actions"><button class="btn" type="submit">Guardar</button><button class="link" type="button" id="et-cancel">Cancelar</button>
           <span style="margin-left:auto">${deletingTopic === slug
-            ? `<span class="note-sim">Se borran sus datos, historial, correos y eventos; las tareas quedan sin tema.</span> <button class="link danger" type="button" id="et-del-ok">Sí, borrar el tema</button> <button class="link" type="button" id="et-del-no">No</button>`
+            ? `<span class="note-sim">Se borran sus datos, historial, correos y eventos; ${t.private_to ? "también sus tareas" : "las tareas quedan sin tema"}.</span> <button class="link danger" type="button" id="et-del-ok">Sí, borrar el tema</button> <button class="link" type="button" id="et-del-no">No</button>`
             : `<button class="link danger" type="button" id="et-del">Borrar tema</button>`}</span></div>
       </form>`
-    : `<div class="callout"><b>Estado actual:</b> ${esc(t.status_summary || "Todavía no hay nada guardado en este tema.")}${t.next_step ? `<br><b>Próximo paso:</b> ${esc(t.next_step)}` : ""}</div>`;
+    : `    <div class="callout"><b>Estado actual:</b> ${esc(t.status_summary || "Todavía no hay nada guardado en este tema.")}${t.next_step ? `<br><b>Próximo paso:</b> ${esc(t.next_step)}` : ""}</div>`;
 
+  const privateBar = `${t.private_to ? `<div class="private-bar"><span>${lock} Tema privado: solo lo ves tú.</span>${sharingTopic === slug
+        ? `<span class="actions"><span>¿Compartirlo con ${esc(otherUser()?.name || "tu pareja")}? Verá todo: tareas, historial, correos y datos.</span><button class="btn" type="button" id="share-ok">Sí, compartir</button><button class="link" type="button" id="share-no">No</button></span>`
+        : `<button class="btn light" type="button" id="share">Compartir con ${esc(otherUser()?.name || "los dos")}</button>`}</div>` : ""}`;
   $("topic-detail").innerHTML = `
-    <div class="topic-head"><div><h2>${esc(t.name)}</h2></div><div class="badges">${badges}${editingTopic === slug ? "" : `<button class="link" type="button" id="et-open">Editar</button>`}</div></div>
+    <div class="topic-head"><div><h2>${t.private_to ? `<span class="lock" title="Solo lo ves tú">${lock}</span>` : ""}${esc(t.name)}</h2></div><div class="badges">${badges}${editingTopic === slug ? "" : `<button class="link" type="button" id="et-open">Editar</button>`}</div></div>
+    ${privateBar}
     ${head}
     <div class="full">
-      ${fold("tasks-" + slug, foldTitle("Pendientes", v.open.length ? String(v.open.length) : ""), (v.open.length ? v.open.map((x) => `<div class="mini-task">
+      ${fold("tasks-" + slug, foldTitle("Pendientes", v.open.length ? String(v.open.length) : ""), (v.open.length ? v.open.map((x) => editingTask === x.id ? taskEditForm(x, "div") : `<div class="mini-task">
           <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
-          <div class="grow">${esc(x.title)}<div class="foot">${esc(userName(x.assignee))}</div></div>${dueBadge(x.due_date)}
+          <button type="button" class="grow tt-mini" data-task-edit="${x.id}" title="Editar o mover a otro tema">${esc(x.title)}<span class="foot">${esc(userName(x.assignee))}</span></button>${dueBadge(x.due_date)}
           ${pendingTaskDel === x.id ? `<button class="tdel on" type="button" data-task-del-ok="${x.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${x.id}" aria-label="Borrar tarea">×</button>`}</div>`).join("") : empty("No hay nada pendiente en este tema."))
         + `<form class="item-form" id="add-task"><input type="text" id="at-title" placeholder="Nueva tarea" aria-label="Nueva tarea"><input type="date" id="at-due" aria-label="Fecha límite"><button class="btn light" type="submit">Añadir</button></form>`, true)}
       ${mailsHTML(v.mails)}
@@ -451,6 +476,13 @@ function wireTopic(slug, v) {
     act(() => post(`/api/topics/${slug}`, { name: $("et-name").value, status_summary: $("et-status").value, next_step: $("et-next").value, email_to: $("et-to").value, email_lang: $("et-lang").value }, "PATCH"), "Tema guardado.");
   });
 
+  // color y compartir
+  box.querySelectorAll("[data-swatch]").forEach((b) => b.addEventListener("click", () =>
+    act(() => post(`/api/topics/${slug}/color`, { color: b.dataset.swatch }, "PUT"), `Color: ${COLOR_NAMES[b.dataset.swatch]}.`)));
+  $("share")?.addEventListener("click", () => { sharingTopic = slug; renderTopic(slug); });
+  $("share-no")?.addEventListener("click", () => { sharingTopic = null; renderTopic(slug); });
+  $("share-ok")?.addEventListener("click", () => { sharingTopic = null; act(() => post(`/api/topics/${slug}/share`), `«${v.t.name}» ahora lo veis los dos.`); });
+
   // datos clave y contactos
   box.querySelectorAll("[data-item-form]").forEach((f) => f.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -547,6 +579,7 @@ function wireTopic(slug, v) {
    ========================================================= */
 function showTab(name) {
   if (name !== "tema") currentTopic = null;
+  editingTopic = deletingTopic = sharingTopic = null; editingTask = null;
   $("tab-temas").hidden = name !== "temas";
   $("tab-tema").hidden = name !== "tema";
 }
@@ -560,10 +593,23 @@ document.addEventListener("click", (e) => {
 });
 $("back-topics").addEventListener("click", () => { showTab("temas"); renderAll(); window.scrollTo({ top: 0 }); });
 document.addEventListener("click", (e) => {
+  const ed = e.target.closest("[data-task-edit]");
+  if (ed) { editingTask = +ed.dataset.taskEdit; pendingTaskDel = null; renderAll(); return; }
+  if (e.target.closest("[data-task-edit-cancel]")) { editingTask = null; renderAll(); return; }
   const d = e.target.closest("[data-task-del]"), ok = e.target.closest("[data-task-del-ok]");
   if (d) { pendingTaskDel = +d.dataset.taskDel; renderAll(); if (currentTopic) renderTopic(currentTopic); }
   else if (ok) { pendingTaskDel = null; act(() => post(`/api/tasks/${ok.dataset.taskDelOk}`, {}, "DELETE"), "Tarea borrada."); }
   else if (pendingTaskDel && !e.target.closest(".tdel")) { pendingTaskDel = null; renderAll(); }
+});
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-task-form]"); if (!f) return;
+  e.preventDefault();
+  const id = f.dataset.taskForm, topic = f.elements.topic.value;
+  const before = S.tasks.find((t) => t.id === +id);
+  const moved = (before?.topic_id ?? null) !== (topicBySlug(topic)?.id ?? null);
+  editingTask = null;
+  act(() => post(`/api/tasks/${id}`, { title: f.elements.title.value, topic: topic || null, due_date: f.elements.due.value || null, assignee: f.elements.assignee.value }, "PATCH"),
+    moved ? `Tarea movida a ${topic ? topicBySlug(topic).name : "Sin tema"}.` : "Tarea guardada.");
 });
 document.addEventListener("change", (e) => {
   const id = e.target.dataset?.task; if (!id) return;

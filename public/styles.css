@@ -351,3 +351,37 @@ button.alerts-head { width: 100%; text-align: left; cursor: default; }
 .edit-topic { gap: 12px; }
 .topic-head .badges { align-items: center; }
 @media (max-width: 520px) { .kv-list li { grid-template-columns: minmax(0, 1fr) auto; } .kv-list .k { grid-column: 1 / -1; font-size: .8rem; } }
+
+/* Colores de tarjeta (cada persona elige los suyos) */
+:root { --c-mint: #dff4ec; --c-sky: #e1edfb; --c-lilac: #ece5fa; --c-peach: #fde8dc; --c-sand: #f5eedc; --c-rose: #fbe3ea; --c-sage: #e6eee0; --c-slate: #e3e7ec; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --c-mint: #173a31; --c-sky: #1a2c45; --c-lilac: #2b2445; --c-peach: #432a1f; --c-sand: #3a331f; --c-rose: #432330; --c-sage: #263322; --c-slate: #262d35; } }
+:root[data-theme="dark"] { --c-mint: #173a31; --c-sky: #1a2c45; --c-lilac: #2b2445; --c-peach: #432a1f; --c-sand: #3a331f; --c-rose: #432330; --c-sage: #263322; --c-slate: #262d35; }
+[data-color="mint"] { --tc: var(--c-mint); } [data-color="sky"] { --tc: var(--c-sky); } [data-color="lilac"] { --tc: var(--c-lilac); }
+[data-color="peach"] { --tc: var(--c-peach); } [data-color="sand"] { --tc: var(--c-sand); } [data-color="rose"] { --tc: var(--c-rose); }
+[data-color="sage"] { --tc: var(--c-sage); } [data-color="slate"] { --tc: var(--c-slate); }
+.card.topic[data-color] { background: var(--tc); border-color: transparent; }
+.card.topic[data-color] .badge.mute { background: var(--card); }
+.swatch-row { display: grid; gap: 8px; font-size: .84rem; font-weight: 500; color: var(--muted); }
+.swatch-row small { font-weight: 400; color: var(--faint); }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.swatch { width: 30px; height: 30px; border-radius: 999px; background: var(--tc, var(--card)); border: 1px solid var(--line); }
+.swatch.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--fg); }
+/* Temas privados */
+.lock { display: inline-flex; vertical-align: -1px; margin-right: 6px; color: var(--faint); }
+.private-bar { display: flex; gap: 10px 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 10px;
+  background: var(--card); border: 1px dashed var(--line); border-radius: 14px; padding: 12px 16px; font-size: .9rem; color: var(--muted); }
+.private-bar .lock { margin-right: 4px; }
+.check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: .86rem; color: var(--muted); cursor: pointer; }
+.check input { width: 16px; height: 16px; accent-color: var(--accent); }
+/* Editar / mover tareas */
+.trows .tt { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.trows .tt:hover { color: var(--accent); }
+.tt-mini { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; display: grid; gap: 2px; font-size: .92rem; color: var(--fg); }
+.tt-mini:hover { color: var(--accent); }
+.tt-mini .foot { color: var(--muted); font-size: .82rem; }
+.trows li.tedit { display: block; }
+.task-edit { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; width: 100%; padding: 6px 0; }
+.task-edit input[name=title] { flex: 2 1 220px; }
+.task-edit select, .task-edit input[type=date] { flex: 1 1 130px; width: auto; }
+.task-edit input, .task-edit select { min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; color: var(--fg); font-size: .9rem; }
+div.tedit { border-top: 1px solid var(--line); }

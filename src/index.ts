@@ -41,16 +41,26 @@ const signerFor = (env: Env, t: Topic, me: string) => {
   return (u.find((x) => x.email === (t.owner || me)) ?? u[0]).fullName;
 };
 
-async function getTopics(env: Env): Promise<Topic[]> {
+/** Temas que puede ver `me` (los compartidos y sus privados), con su color. Sin `me`: todos. */
+async function getTopics(env: Env, me?: string): Promise<Topic[]> {
   const { results } = await env.DB.prepare(
-    `SELECT id, slug, name, status_summary, next_step, email_lang, email_to, email_ref, owner, sort FROM topics ORDER BY sort, id`,
-  ).all<Topic>();
+    `SELECT t.id, t.slug, t.name, t.status_summary, t.next_step, t.email_lang, t.email_to, t.email_ref, t.owner, t.sort, t.private_to, c.color
+     FROM topics t LEFT JOIN topic_colors c ON c.topic_id = t.id AND c.email = ?1
+     WHERE ?1 IS NULL OR t.private_to IS NULL OR t.private_to = ?1 ORDER BY t.sort, t.id`,
+  ).bind(me ?? null).all<Topic>();
   return results;
 }
-async function topicBySlug(env: Env, slug: string): Promise<Topic> {
-  const t = (await getTopics(env)).find((x) => x.slug === slug);
+async function topicBySlug(env: Env, slug: string, me?: string): Promise<Topic> {
+  const t = (await getTopics(env, me)).find((x) => x.slug === slug);
   if (!t) throw new HttpError(404, "Ese tema no existe");
   return t;
+}
+/** Condición SQL: la fila no tiene tema, o su tema es visible para ?1 */
+const VISIBLE = `(topic_id IS NULL OR topic_id IN (SELECT id FROM topics WHERE private_to IS NULL OR private_to = ?1))`;
+/** Comprueba que una fila (tarea, correo, evento, dato) pertenece a un tema que `me` puede ver. */
+async function guard(env: Env, table: "tasks" | "mails" | "events" | "topic_items", id: string | number, me: string) {
+  const r = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?2 AND ${VISIBLE}`).bind(me, Number(id)).first();
+  if (!r) throw new HttpError(404, "Eso ya no existe");
 }
 const addHistory = (env: Env, topicId: number, text: string, source = "web") =>
   env.DB.prepare(`INSERT INTO history (topic_id, at, text, source) VALUES (?, date('now'), ?, ?)`).bind(topicId, text, source).run();
@@ -58,12 +68,12 @@ const addHistory = (env: Env, topicId: number, text: string, source = "web") =>
 /** Todo lo que necesita la web, en una sola llamada. */
 async function state(env: Env, me: string) {
   const [topics, items, history, tasks, mails, events, expenses, cal, files] = await Promise.all([
-    getTopics(env),
-    env.DB.prepare(`SELECT id, topic_id, kind, label, value, extra FROM topic_items ORDER BY sort, id`).all(),
-    env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history ORDER BY at DESC, id DESC`).all(),
-    env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by FROM tasks ORDER BY id`).all(),
-    env.DB.prepare(`SELECT id, topic_id, from_name, from_addr, subject, lang, received_at, intent, todo, due, state, forwarded_by FROM mails WHERE state != 'archived' ORDER BY received_at DESC, id DESC`).all(),
-    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar FROM events ORDER BY date, id`).all(),
+    getTopics(env, me),
+    env.DB.prepare(`SELECT id, topic_id, kind, label, value, extra FROM topic_items WHERE ${VISIBLE} ORDER BY sort, id`).bind(me).all(),
+    env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history WHERE ${VISIBLE} ORDER BY at DESC, id DESC`).bind(me).all(),
+    env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by FROM tasks WHERE ${VISIBLE} ORDER BY id`).bind(me).all(),
+    env.DB.prepare(`SELECT id, topic_id, from_name, from_addr, subject, lang, received_at, intent, todo, due, state, forwarded_by FROM mails WHERE state != 'archived' AND ${VISIBLE} ORDER BY received_at DESC, id DESC`).bind(me).all(),
+    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, name, cat, amount, cycle, next, notice, sub, flag FROM expenses ORDER BY id`).all(),
     env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>(),
     env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
@@ -78,10 +88,10 @@ async function state(env: Env, me: string) {
 }
 
 /** Entrada libre (web o todo@): Claude la convierte en tarea o nota. */
-const workTopics = async (env: Env) => (await getTopics(env)).filter((t) => t.slug !== "documentos");
+const workTopics = async (env: Env, who: string) => (await getTopics(env, who)).filter((t) => t.slug !== "documentos");
 
 async function ingest(env: Env, opts: { text: string; sender: string; source: "web" | "email"; subject?: string }) {
-  const topics = await workTopics(env);
+  const topics = await workTopics(env, opts.sender);
   const r = await classify(env, {
     text: opts.subject ? `Asunto: ${opts.subject}\n\n${opts.text}` : opts.text,
     sender: opts.sender, topics, users: allowedSenders(env), today: today(),
@@ -106,7 +116,7 @@ async function ingest(env: Env, opts: { text: string; sender: string; source: "w
 
 /** Correo reenviado a inbox@: resumen, tema, plazo y eventos. */
 async function ingestMail(env: Env, opts: { subject: string; text: string; forwardedBy: string }) {
-  const topics = await workTopics(env);
+  const topics = await workTopics(env, opts.forwardedBy);
   const a = await analyzeMail(env, { ...opts, topics, today: today() });
   const topic = topics.find((t) => t.slug === a.topic_slug) ?? null;
   const row = await env.DB.prepare(
@@ -151,16 +161,24 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   }
 
   if ((mm = p.match(/^\/api\/tasks\/(\d+)$/)) && m === "PATCH") {
-    const { status } = await body<{ status?: string }>();
-    if (status === "done") await env.DB.prepare(`UPDATE tasks SET status='done', completed_at=date('now'), completed_by=? WHERE id=?`).bind(me, mm[1]).run();
-    else await env.DB.prepare(`UPDATE tasks SET status='open', completed_at=NULL, completed_by=NULL WHERE id=?`).bind(mm[1]).run();
+    await guard(env, "tasks", mm[1], me);
+    const b = await body<{ status?: string; topic?: string | null; title?: string; due_date?: string | null; assignee?: string }>();
+    if (b.status === "done") await env.DB.prepare(`UPDATE tasks SET status='done', completed_at=date('now'), completed_by=? WHERE id=?`).bind(me, mm[1]).run();
+    else if (b.status === "open") await env.DB.prepare(`UPDATE tasks SET status='open', completed_at=NULL, completed_by=NULL WHERE id=?`).bind(mm[1]).run();
+    if (b.topic !== undefined) {
+      const t = b.topic ? await topicBySlug(env, b.topic, me) : null;
+      await env.DB.prepare(`UPDATE tasks SET topic_id = ? WHERE id = ?`).bind(t?.id ?? null, mm[1]).run();
+    }
+    if (b.title !== undefined && b.title.trim()) await env.DB.prepare(`UPDATE tasks SET title = ? WHERE id = ?`).bind(b.title.trim(), mm[1]).run();
+    if (b.due_date !== undefined) await env.DB.prepare(`UPDATE tasks SET due_date = ? WHERE id = ?`).bind(b.due_date && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : null, mm[1]).run();
+    if (b.assignee !== undefined && b.assignee) await env.DB.prepare(`UPDATE tasks SET assignee = ? WHERE id = ?`).bind(b.assignee, mm[1]).run();
     return json({ ok: true });
   }
 
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/note$/)) && m === "POST") {
     const { text } = await body<{ text?: string }>();
     if (!text?.trim()) throw new HttpError(400, "La nota está vacía");
-    const t = await topicBySlug(env, mm[1]);
+    const t = await topicBySlug(env, mm[1], me);
     await addHistory(env, t.id, text.trim());
     await env.DB.prepare(`UPDATE topics SET status_summary = ?, updated_at = datetime('now') WHERE id = ?`).bind(text.trim().replace(/\.?$/, "."), t.id).run();
     return json({ ok: true });
@@ -168,6 +186,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
 
   if ((mm = p.match(/^\/api\/mails\/(\d+)$/)) && m === "POST") {
     const { action } = await body<{ action?: string }>();
+    await guard(env, "mails", mm[1], me);
     const mail = await env.DB.prepare(`SELECT * FROM mails WHERE id = ?`).bind(mm[1]).first<{ id: number; topic_id: number; todo: string; due: string; state: string }>();
     if (!mail) throw new HttpError(404, "Ese correo ya no existe");
     if (action === "task") {
@@ -183,6 +202,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
 
   if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "POST") {
     const { attendee, in_calendar } = await body<{ attendee?: string; in_calendar?: boolean }>();
+    await guard(env, "events", mm[1], me);
     const ev = await env.DB.prepare(`SELECT id, topic_id, title, date FROM events WHERE id = ?`).bind(mm[1]).first<{ id: number; topic_id: number; title: string; date: string }>();
     if (!ev) throw new HttpError(404, "Ese evento ya no existe");
     if (attendee !== undefined) await env.DB.prepare(`UPDATE events SET attendee = ? WHERE id = ?`).bind(attendee || null, ev.id).run();
@@ -195,9 +215,10 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
 
   if (p === "/api/draft" && m === "POST") {
     const { topic, request, lang, mailId } = await body<{ topic: string; request?: string; lang?: string; mailId?: number }>();
-    const t = await topicBySlug(env, topic);
+    const t = await topicBySlug(env, topic, me);
     let replyTo: { from: string; subject: string; intent: string; todo: string; addr: string } | undefined;
     if (mailId) {
+      await guard(env, "mails", mailId, me);
       const mail = await env.DB.prepare(`SELECT from_name, from_addr, subject, intent, todo FROM mails WHERE id = ?`).bind(mailId).first<{ from_name: string; from_addr: string; subject: string; intent: string; todo: string }>();
       if (mail) replyTo = { from: mail.from_name, subject: mail.subject, intent: mail.intent, todo: mail.todo, addr: mail.from_addr };
     }
@@ -214,7 +235,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
 
   if (p === "/api/draft/sent" && m === "POST") {
     const { topic, subject, to, mailId } = await body<{ topic: string; subject: string; to?: string; mailId?: number }>();
-    const t = await topicBySlug(env, topic);
+    const t = await topicBySlug(env, topic, me);
     await addHistory(env, t.id, `Email enviado${to ? ` a ${to}` : ""}: «${subject}»`);
     await env.DB.prepare(`INSERT INTO tasks (title, topic_id, assignee, due_date, created_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(`Revisar si han respondido: ${subject}`, t.id, me, addDays(14), me).run();
@@ -229,24 +250,40 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     const cat = e.sub ? "Ocio y suscripciones" : (e.cat?.trim() || "Otros");
     await env.DB.prepare(`INSERT INTO expenses (name, cat, amount, cycle, next, notice, sub) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .bind(e.name.trim(), cat, Number(e.amount), cycle, e.next || null, e.notice?.trim() || (e.sub ? "En cualquier momento" : null), e.sub ? 1 : 0).run();
-    const t = await topicBySlug(env, "finanzas").catch(() => null);
+    const t = await topicBySlug(env, "finanzas", me).catch(() => null);
     if (t) await addHistory(env, t.id, `${e.sub ? "Suscripción" : "Gasto fijo"} añadido: ${e.name.trim()}`);
     return json({ ok: true });
   }
 
   /* --- temas --- */
   if (p === "/api/topics" && m === "POST") {
-    const { name } = await body<{ name?: string }>();
+    const { name, private: priv } = await body<{ name?: string; private?: boolean }>();
     const n = name?.trim().slice(0, 60);
     if (!n) throw new HttpError(400, "Escribe el nombre del tema");
     const base = n.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "tema";
     const taken = new Set((await getTopics(env)).map((t) => t.slug));
     let slug = base, i = 2; while (taken.has(slug)) slug = `${base}-${i++}`;
-    await env.DB.prepare(`INSERT INTO topics (slug, name, sort) VALUES (?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM topics))`).bind(slug, n).run();
+    await env.DB.prepare(`INSERT INTO topics (slug, name, private_to, sort) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM topics))`).bind(slug, n, priv ? me : null).run();
     return json({ ok: true, slug });
   }
+  if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/share$/)) && m === "POST") {
+    const t = await topicBySlug(env, mm[1], me);
+    if (t.private_to !== me) throw new HttpError(400, "Este tema ya es compartido");
+    await env.DB.prepare(`UPDATE topics SET private_to = NULL WHERE id = ?`).bind(t.id).run();
+    const name = users(env).find((u) => u.email === me)?.name || me;
+    await addHistory(env, t.id, `${name} ha compartido este tema con los dos`);
+    return json({ ok: true });
+  }
+  if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/color$/)) && m === "PUT") {
+    const t = await topicBySlug(env, mm[1], me);
+    const { color } = await body<{ color?: string }>();
+    if (!color) await env.DB.prepare(`DELETE FROM topic_colors WHERE email = ? AND topic_id = ?`).bind(me, t.id).run();
+    else if (/^[a-z]{3,12}$/.test(color)) await env.DB.prepare(`INSERT INTO topic_colors (email, topic_id, color) VALUES (?, ?, ?) ON CONFLICT (email, topic_id) DO UPDATE SET color = excluded.color`).bind(me, t.id, color).run();
+    else throw new HttpError(400, "Color no válido");
+    return json({ ok: true });
+  }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)$/)) && m === "PATCH") {
-    const t = await topicBySlug(env, mm[1]);
+    const t = await topicBySlug(env, mm[1], me);
     const b = await body<{ name?: string; status_summary?: string; next_step?: string; email_to?: string; email_lang?: string }>();
     const v = (x: string | undefined, old: string | null) => (x === undefined ? old : x.trim() || null);
     const name = b.name?.trim() ? b.name.trim().slice(0, 60) : t.name;
@@ -255,10 +292,12 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)$/)) && m === "DELETE") {
-    const t = await topicBySlug(env, mm[1]);
+    const t = await topicBySlug(env, mm[1], me);
     if (t.slug === "documentos") throw new HttpError(400, "Documentos compartidos no se puede borrar");
     await env.DB.batch([
-      env.DB.prepare(`UPDATE tasks SET topic_id = NULL WHERE topic_id = ?`).bind(t.id),
+      // en un tema privado las tareas se borran (si no, pasarían a verse por los dos)
+      env.DB.prepare(t.private_to ? `DELETE FROM tasks WHERE topic_id = ?` : `UPDATE tasks SET topic_id = NULL WHERE topic_id = ?`).bind(t.id),
+      env.DB.prepare(`DELETE FROM topic_colors WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM topic_items WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM history WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM events WHERE topic_id = ?`).bind(t.id),
@@ -268,7 +307,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/items$/)) && m === "POST") {
-    const t = await topicBySlug(env, mm[1]);
+    const t = await topicBySlug(env, mm[1], me);
     const { kind, label, value } = await body<{ kind?: string; label?: string; value?: string }>();
     if (!["fact", "contact"].includes(kind || "") || !label?.trim()) throw new HttpError(400, "Escribe al menos el nombre del dato");
     await env.DB.prepare(`INSERT INTO topic_items (topic_id, kind, label, value, sort) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM topic_items))`)
@@ -276,11 +315,12 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/items\/(\d+)$/)) && m === "DELETE") {
+    await guard(env, "topic_items", mm[1], me);
     await env.DB.prepare(`DELETE FROM topic_items WHERE id = ?`).bind(mm[1]).run();
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/events$/)) && m === "POST") {
-    const t = await topicBySlug(env, mm[1]);
+    const t = await topicBySlug(env, mm[1], me);
     const e = await body<{ title?: string; date?: string; time?: string; place?: string; who?: string; note?: string }>();
     if (!e.title?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(e.date || "")) throw new HttpError(400, "Escribe el nombre y la fecha del evento");
     await env.DB.prepare(`INSERT INTO events (topic_id, title, date, time, place, who, note) VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -288,33 +328,35 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "DELETE") {
+    await guard(env, "events", mm[1], me);
     await env.DB.prepare(`DELETE FROM events WHERE id = ?`).bind(mm[1]).run();
     return json({ ok: true });
   }
   if (p === "/api/tasks" && m === "POST") {
     const b = await body<{ title?: string; topic?: string; due_date?: string | null; assignee?: string }>();
     if (!b.title?.trim()) throw new HttpError(400, "Escribe la tarea");
-    const t = b.topic ? await topicBySlug(env, b.topic) : null;
+    const t = b.topic ? await topicBySlug(env, b.topic, me) : null;
     const due = b.due_date && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : null;
     await env.DB.prepare(`INSERT INTO tasks (title, topic_id, assignee, due_date, created_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(b.title.trim(), t?.id ?? null, b.assignee || me, due, me).run();
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/tasks\/(\d+)$/)) && m === "DELETE") {
+    await guard(env, "tasks", mm[1], me);
     await env.DB.prepare(`DELETE FROM tasks WHERE id = ?`).bind(mm[1]).run();
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/expenses\/(\d+)$/)) && m === "DELETE") {
     const e = await env.DB.prepare(`SELECT name FROM expenses WHERE id = ?`).bind(mm[1]).first<{ name: string }>();
     await env.DB.prepare(`DELETE FROM expenses WHERE id = ?`).bind(mm[1]).run();
-    const t = await topicBySlug(env, "finanzas").catch(() => null);
+    const t = await topicBySlug(env, "finanzas", me).catch(() => null);
     if (t && e) await addHistory(env, t.id, `Suscripción quitada: ${e.name}`);
     return json({ ok: true });
   }
 
   if (p === "/api/trips/book" && m === "POST") {
     const b = await body<{ dest: string; d1: string; d2: string; who: string; count: number; handOnly?: boolean }>();
-    const t = await topicBySlug(env, "viajes");
+    const t = await topicBySlug(env, "viajes", me);
     const dep = new Date(b.d1 + "T12:00:00Z");
     const minus = (n: number) => { const d = new Date(dep); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
     const stmts = [
@@ -386,7 +428,7 @@ export default {
         await ensureSchema(env);
         const tok = await env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>();
         if (!tok || tok.v !== cal[1]) return new Response("No encontrado", { status: 404 });
-        const { results } = await env.DB.prepare(`SELECT e.id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.in_calendar = 1 ORDER BY e.date`).all();
+        const { results } = await env.DB.prepare(`SELECT e.id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.in_calendar = 1 AND t.private_to IS NULL ORDER BY e.date`).all();
         return new Response(buildIcs(results as never, users(env)), { headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "no-store" } });
       }
 
