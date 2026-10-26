@@ -500,3 +500,17 @@ img, video, iframe, table { max-width: 100%; }
   .cgroup h5 { grid-row: auto; grid-column: 1; }
   .cgroup .ci, .cgroup .ci-empty { grid-column: 2; }
 }
+
+/* Botón + de cada apartado de contactos */
+.cgroup h5 { display: flex; align-items: center; gap: 6px; }
+.c-add { width: 18px; height: 18px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--accent); font-size: .8rem; font-weight: 700; line-height: 1; display: inline-grid; place-items: center; flex: none; }
+.c-add:hover { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+@media (max-width: 640px) { .cgroup h5 { align-self: center; } }
+@media (max-width: 640px) {
+  .cgroup { grid-template-columns: 98px minmax(0, 1fr); }
+  .cgroup h5 { align-self: start; justify-content: space-between; padding-top: 2px; padding-right: 4px; }
+}
+@media (max-width: 640px) {
+  .ci { position: relative; padding-right: 22px; }
+  .ci-top .tdel { position: absolute; right: 0; top: 0; margin: 0; }
+}

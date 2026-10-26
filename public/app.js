@@ -314,7 +314,7 @@ function renderTopic(slug) {
       ${composerHTML(slug)}
       ${fold("hist-" + slug, foldTitle("Historial"), `<form class="note-form" id="note-form"><input type="text" id="note-text" placeholder="Añadir una nota (pasa a ser el estado actual)" aria-label="Nota"><button class="btn" type="submit">Guardar</button></form>
           ${v.history.length ? `<ul class="timeline">${v.history.slice(0, 30).map((h) => `<li><time>${esc(fmt(h.at))}</time><div>${esc(h.text)}<div class="src">vía ${esc(h.source)}</div></div></li>`).join("")}</ul>` : empty("Todavía no hay historial.")}`)}
-      ${fold("contacts-" + slug, foldTitle("Contactos", v.contacts.length ? String(v.contacts.length) : ""), contactsBody(slug, v.contacts), slug === "colegio")}
+      ${fold("contacts-" + slug, foldTitle("Contactos"), contactsBody(slug, v.contacts), slug === "colegio")}
       ${(S.panels || []).filter((cp) => cp.topic_id === t.id).map((cp) => `<details class="fold" data-fold="cp${cp.id}" ${uiOpen["cp" + cp.id] ? "open" : ""}>
         <summary>${foldTitle(esc(cp.title), cp.body ? "" : "vacío")}${delPanel === cp.id
           ? `<button type="button" class="fold-x on" data-del-panel-ok="${cp.id}">Borrar</button>`
@@ -332,6 +332,7 @@ function renderTopic(slug) {
 /* ---------- contactos por apartados (en Colegios: General y cada hijo) ---------- */
 const KIDS = ["Valentina", "Paul", "Santiago"];
 const presetTo = {}; // email elegido desde Contactos para el próximo borrador
+let addingContact = null; // apartado en el que se está añadiendo un contacto
 const cExtra = (c) => { try { return c.extra ? JSON.parse(c.extra) : {}; } catch { return {}; } };
 const isEmail = (x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || "");
 function contactsBody(slug, contacts) {
@@ -345,15 +346,15 @@ function contactsBody(slug, contacts) {
   };
   return `<div class="cgrid">${groups.map((g) => {
       const list = contacts.filter((c) => (cExtra(c).g || "General") === g);
-      return `<div class="cgroup"><h5>${esc(g)}</h5>${list.map(one).join("") || `<span class="ci-empty">—</span>`}</div>`;
+      return `<div class="cgroup"><h5>${esc(g)}<button type="button" class="c-add" data-add-contact="${esc(g)}" aria-label="Añadir contacto en ${esc(g)}" title="Añadir contacto">+</button></h5>${list.map(one).join("") || `<span class="ci-empty">—</span>`}</div>`;
     }).join("")}</div>
-    <form class="contact-form" id="contact-form">
-      <select id="cf-g" aria-label="Apartado">${groups.map((g) => `<option>${esc(g)}</option>`).join("")}</select>
+    ${addingContact == null ? "" : `<form class="contact-form" id="contact-form">
+      <select id="cf-g" aria-label="Apartado">${groups.map((g) => `<option ${g === addingContact ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
       <input type="text" id="cf-name" placeholder="Quién (p. ej. Tutora)" aria-label="Quién">
       <input type="email" id="cf-mail" placeholder="Email" aria-label="Email">
       <input type="tel" id="cf-tel" placeholder="Teléfono" aria-label="Teléfono">
-      <button class="btn light" type="submit">Añadir</button>
-    </form>`;
+      <span class="actions"><button class="btn light" type="submit">Añadir</button><button class="link" type="button" id="cf-cancel">Cancelar</button></span>
+    </form>`}`;
 }
 
 /* ---------- añadir / quitar paneles ---------- */
@@ -634,9 +635,13 @@ function wireTopic(slug, v) {
     e.preventDefault();
     const label = $("cf-name").value.trim(), mail = $("cf-mail").value.trim(), tel = $("cf-tel").value.trim();
     if (!label) { say("Escribe quién es el contacto.", true); return; }
-    uiOpen["contacts-" + slug] = true;
+    uiOpen["contacts-" + slug] = true; addingContact = null;
     act(() => post(`/api/topics/${slug}/items`, { kind: "contact", label, value: mail || tel, extra: JSON.stringify({ g: $("cf-g").value, tel }) }), "Contacto guardado.");
   });
+  box.querySelectorAll("[data-add-contact]").forEach((b) => b.addEventListener("click", () => {
+    addingContact = b.dataset.addContact; uiOpen["contacts-" + slug] = true; renderTopic(slug); $("cf-name")?.focus();
+  }));
+  $("cf-cancel")?.addEventListener("click", () => { addingContact = null; renderTopic(slug); });
   box.querySelectorAll("[data-mail-to]").forEach((b) => b.addEventListener("click", () => {
     presetTo[slug] = b.dataset.mailTo; uiOpen["mail-" + slug] = true; renderTopic(slug);
     $("composer")?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -739,7 +744,7 @@ function wireTopic(slug, v) {
    ========================================================= */
 function showTab(name) {
   if (name !== "tema") currentTopic = null;
-  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; addingPanel = false; delPanel = null;
+  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; addingPanel = false; delPanel = null; addingContact = null;
   $("tab-temas").hidden = name !== "temas";
   $("tab-tema").hidden = name !== "tema";
 }
