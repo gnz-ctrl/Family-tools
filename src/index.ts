@@ -1,6 +1,6 @@
 import PostalMime from "postal-mime";
 import { allowedSenders, getUser } from "./auth";
-import { analyzeMail, classify, draftEmail, reviseEmail } from "./claude";
+import { analyzeMail, assistTask, classify, draftEmail, reviseEmail } from "./claude";
 import { ensureSchema, resetDemo } from "./db";
 import { buildIcs } from "./ics";
 import type { Env, Topic, User } from "./types";
@@ -44,8 +44,9 @@ const signerFor = (env: Env, t: Topic, me: string) => {
 /** Temas que puede ver `me` (los compartidos y sus privados), con su color. Sin `me`: todos. */
 async function getTopics(env: Env, me?: string): Promise<Topic[]> {
   const { results } = await env.DB.prepare(
-    `SELECT t.id, t.slug, t.name, t.status_summary, t.next_step, t.email_lang, t.email_to, t.email_ref, t.owner, t.sort, t.private_to, c.color
+    `SELECT t.id, t.slug, t.name, t.status_summary, t.next_step, t.email_lang, t.email_to, t.email_ref, t.owner, t.sort, t.private_to, c.color, pr.hidden
      FROM topics t LEFT JOIN topic_colors c ON c.topic_id = t.id AND c.email = ?1
+     LEFT JOIN topic_prefs pr ON pr.topic_id = t.id AND pr.email = ?1
      WHERE ?1 IS NULL OR t.private_to IS NULL OR t.private_to = ?1 ORDER BY t.sort, t.id`,
   ).bind(me ?? null).all<Topic>();
   return results;
@@ -58,31 +59,54 @@ async function topicBySlug(env: Env, slug: string, me?: string): Promise<Topic> 
 /** Condición SQL: la fila no tiene tema, o su tema es visible para ?1 */
 const VISIBLE = `(topic_id IS NULL OR topic_id IN (SELECT id FROM topics WHERE private_to IS NULL OR private_to = ?1))`;
 /** Comprueba que una fila (tarea, correo, evento, dato) pertenece a un tema que `me` puede ver. */
-async function guard(env: Env, table: "tasks" | "mails" | "events" | "topic_items", id: string | number, me: string) {
+async function guard(env: Env, table: "tasks" | "mails" | "events" | "topic_items" | "topic_panels", id: string | number, me: string) {
   const r = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?2 AND ${VISIBLE}`).bind(me, Number(id)).first();
   if (!r) throw new HttpError(404, "Eso ya no existe");
 }
 const addHistory = (env: Env, topicId: number, text: string, source = "web") =>
   env.DB.prepare(`INSERT INTO history (topic_id, at, text, source) VALUES (?, date('now'), ?, ?)`).bind(topicId, text, source).run();
 
+/** Saldo estimado de la API: lo que pusiste al recargar menos lo gastado desde entonces (en €). */
+async function apiCredit(env: Env) {
+  const { results } = await env.DB.prepare(`SELECT k, v FROM settings WHERE k IN ('credit_eur', 'api_spent_usd', 'usd_eur', 'usd_eur_at')`).all<{ k: string; v: string }>();
+  const g = Object.fromEntries(results.map((r) => [r.k, r.v]));
+  let rate = Number(g.usd_eur) || 0.86;
+  if (g.usd_eur_at !== today()) {
+    // tipo de cambio del BCE, una vez al día (si falla se usa el último conocido)
+    try {
+      const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=EUR", { signal: AbortSignal.timeout(2500) });
+      const j = (await r.json()) as { rates?: { EUR?: number } };
+      if (j.rates?.EUR) rate = j.rates.EUR;
+    } catch { /* sin conexión: seguimos con el anterior */ }
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO settings (k, v) VALUES ('usd_eur', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(rate)),
+      env.DB.prepare(`INSERT INTO settings (k, v) VALUES ('usd_eur_at', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(today()),
+    ]);
+  }
+  const spentEur = (Number(g.api_spent_usd) || 0) * rate;
+  return g.credit_eur == null ? { left: null, spent: spentEur } : { left: Number(g.credit_eur) - spentEur, spent: spentEur };
+}
+
 /** Todo lo que necesita la web, en una sola llamada. */
 async function state(env: Env, me: string) {
-  const [topics, items, history, tasks, mails, events, expenses, cal, files] = await Promise.all([
+  const [topics, items, history, tasks, mails, events, expenses, cal, files, panels, credit] = await Promise.all([
     getTopics(env, me),
     env.DB.prepare(`SELECT id, topic_id, kind, label, value, extra FROM topic_items WHERE ${VISIBLE} ORDER BY sort, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history WHERE ${VISIBLE} ORDER BY at DESC, id DESC`).bind(me).all(),
-    env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by FROM tasks WHERE ${VISIBLE} ORDER BY id`).bind(me).all(),
+    env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by, ai FROM tasks WHERE ${VISIBLE} ORDER BY id`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, from_name, from_addr, subject, lang, received_at, intent, todo, due, state, forwarded_by FROM mails WHERE state != 'archived' AND ${VISIBLE} ORDER BY received_at DESC, id DESC`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, name, cat, amount, cycle, next, notice, sub, flag FROM expenses ORDER BY id`).all(),
     env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>(),
     env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
+    env.DB.prepare(`SELECT id, topic_id, title, body FROM topic_panels WHERE ${VISIBLE} ORDER BY sort, id`).bind(me).all(),
+    apiCredit(env),
   ]);
   return {
     me, today: today(), users: users(env), topics,
     items: items.results, history: history.results, tasks: tasks.results,
     mails: mails.results, events: events.results, expenses: expenses.results,
-    files: files.results,
+    files: files.results, panels: panels.results, credit,
     calPath: cal ? `/cal/${cal.v}.ics` : null,
   };
 }
@@ -162,7 +186,8 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
 
   if ((mm = p.match(/^\/api\/tasks\/(\d+)$/)) && m === "PATCH") {
     await guard(env, "tasks", mm[1], me);
-    const b = await body<{ status?: string; topic?: string | null; title?: string; due_date?: string | null; assignee?: string }>();
+    const b = await body<{ status?: string; topic?: string | null; title?: string; due_date?: string | null; assignee?: string; notes?: string }>();
+    if (b.notes !== undefined) await env.DB.prepare(`UPDATE tasks SET notes = ? WHERE id = ?`).bind(b.notes.trim().slice(0, 4000) || null, mm[1]).run();
     if (b.status === "done") await env.DB.prepare(`UPDATE tasks SET status='done', completed_at=date('now'), completed_by=? WHERE id=?`).bind(me, mm[1]).run();
     else if (b.status === "open") await env.DB.prepare(`UPDATE tasks SET status='open', completed_at=NULL, completed_by=NULL WHERE id=?`).bind(mm[1]).run();
     if (b.topic !== undefined) {
@@ -255,6 +280,47 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     return json({ ok: true });
   }
 
+  /* --- saldo de la API (lo introduce la familia al recargar) --- */
+  if (p === "/api/credit" && m === "PUT") {
+    const { eur } = await body<{ eur?: number }>();
+    if (!(Number(eur) >= 0)) throw new HttpError(400, "Escribe el saldo en euros");
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO settings (k, v) VALUES ('credit_eur', ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(Number(eur))),
+      env.DB.prepare(`UPDATE settings SET v = '0' WHERE k = 'api_spent_usd'`),
+    ]);
+    return json({ ok: true });
+  }
+
+  /* --- paneles de cada tema --- */
+  if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/hidden$/)) && m === "PUT") {
+    const t = await topicBySlug(env, mm[1], me);
+    const { hidden } = await body<{ hidden?: string[] }>();
+    const list = (hidden || []).filter((x) => /^[a-z]{2,12}$/.test(x)).slice(0, 20);
+    await env.DB.prepare(`INSERT INTO topic_prefs (email, topic_id, hidden) VALUES (?, ?, ?) ON CONFLICT (email, topic_id) DO UPDATE SET hidden = excluded.hidden`)
+      .bind(me, t.id, JSON.stringify(list)).run();
+    return json({ ok: true });
+  }
+  if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/panels$/)) && m === "POST") {
+    const t = await topicBySlug(env, mm[1], me);
+    const { title } = await body<{ title?: string }>();
+    if (!title?.trim()) throw new HttpError(400, "Escribe el nombre del panel");
+    const r = await env.DB.prepare(`INSERT INTO topic_panels (topic_id, title, body, sort) VALUES (?, ?, '', (SELECT COALESCE(MAX(sort), 0) + 1 FROM topic_panels)) RETURNING id`)
+      .bind(t.id, title.trim().slice(0, 60)).first<{ id: number }>();
+    return json({ ok: true, id: r?.id });
+  }
+  if ((mm = p.match(/^\/api\/panels\/(\d+)$/)) && m === "PATCH") {
+    await guard(env, "topic_panels", mm[1], me);
+    const b = await body<{ title?: string; body?: string }>();
+    if (b.title?.trim()) await env.DB.prepare(`UPDATE topic_panels SET title = ? WHERE id = ?`).bind(b.title.trim().slice(0, 60), Number(mm[1])).run();
+    if (b.body !== undefined) await env.DB.prepare(`UPDATE topic_panels SET body = ? WHERE id = ?`).bind(b.body.slice(0, 20000), Number(mm[1])).run();
+    return json({ ok: true });
+  }
+  if ((mm = p.match(/^\/api\/panels\/(\d+)$/)) && m === "DELETE") {
+    await guard(env, "topic_panels", mm[1], me);
+    await env.DB.prepare(`DELETE FROM topic_panels WHERE id = ?`).bind(Number(mm[1])).run();
+    return json({ ok: true });
+  }
+
   /* --- temas --- */
   if (p === "/api/topics" && m === "POST") {
     const { name, private: priv } = await body<{ name?: string; private?: boolean }>();
@@ -298,6 +364,8 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
       // en un tema privado las tareas se borran (si no, pasarían a verse por los dos)
       env.DB.prepare(t.private_to ? `DELETE FROM tasks WHERE topic_id = ?` : `UPDATE tasks SET topic_id = NULL WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM topic_colors WHERE topic_id = ?`).bind(t.id),
+      env.DB.prepare(`DELETE FROM topic_prefs WHERE topic_id = ?`).bind(t.id),
+      env.DB.prepare(`DELETE FROM topic_panels WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM topic_items WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM history WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM events WHERE topic_id = ?`).bind(t.id),
@@ -308,10 +376,10 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/items$/)) && m === "POST") {
     const t = await topicBySlug(env, mm[1], me);
-    const { kind, label, value } = await body<{ kind?: string; label?: string; value?: string }>();
-    if (!["fact", "contact"].includes(kind || "") || !label?.trim()) throw new HttpError(400, "Escribe al menos el nombre del dato");
-    await env.DB.prepare(`INSERT INTO topic_items (topic_id, kind, label, value, sort) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM topic_items))`)
-      .bind(t.id, kind, label.trim(), value?.trim() || "").run();
+    const { kind, label, value, extra } = await body<{ kind?: string; label?: string; value?: string; extra?: string }>();
+    if (!["fact", "contact"].includes(kind || "") || !label?.trim()) throw new HttpError(400, "Escribe al menos el nombre");
+    await env.DB.prepare(`INSERT INTO topic_items (topic_id, kind, label, value, extra, sort) VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort), 0) + 1 FROM topic_items))`)
+      .bind(t.id, kind, label.trim(), value?.trim() || "", extra ? String(extra).slice(0, 500) : null).run();
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/items\/(\d+)$/)) && m === "DELETE") {
@@ -339,6 +407,41 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     const due = b.due_date && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date) ? b.due_date : null;
     await env.DB.prepare(`INSERT INTO tasks (title, topic_id, assignee, due_date, created_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(b.title.trim(), t?.id ?? null, b.assignee || me, due, me).run();
+    return json({ ok: true });
+  }
+  // Ayuda de Claude para una tarea: pasos y acciones propuestas (se guardan en la tarea)
+  if ((mm = p.match(/^\/api\/tasks\/(\d+)\/assist$/)) && m === "POST") {
+    await guard(env, "tasks", mm[1], me);
+    const task = await env.DB.prepare(`SELECT id, title, notes, due_date, assignee, topic_id FROM tasks WHERE id = ?`).bind(Number(mm[1]))
+      .first<{ id: number; title: string; notes: string | null; due_date: string | null; assignee: string; topic_id: number | null }>();
+    const t = task!.topic_id ? (await getTopics(env, me)).find((x) => x.id === task!.topic_id) ?? null : null;
+    let context = "";
+    if (t) {
+      context = await topicContext(env, t);
+      const { results: mails } = await env.DB.prepare(`SELECT from_name, subject, intent, todo, due FROM mails WHERE topic_id = ? AND state != 'archived' ORDER BY id DESC LIMIT 5`).bind(t.id).all<{ from_name: string; subject: string; intent: string; todo: string; due: string }>();
+      const { results: evs } = await env.DB.prepare(`SELECT title, date, time FROM events WHERE topic_id = ? AND date >= date('now') ORDER BY date LIMIT 5`).bind(t.id).all<{ title: string; date: string; time: string }>();
+      if (mails.length) context += "\nCorreos recientes:\n" + mails.map((x) => `- ${x.from_name}: ${x.subject}. ${x.intent} Qué hacer: ${x.todo}${x.due ? ` (plazo ${x.due})` : ""}`).join("\n");
+      if (evs.length) context += "\nPróximos eventos:\n" + evs.map((x) => `- ${x.date} ${x.time || ""} ${x.title}`).join("\n");
+    }
+    const who = task!.assignee === "both" ? "los dos" : users(env).find((u) => u.email === task!.assignee)?.name || task!.assignee;
+    const a = await assistTask(env, { task: task!.title, notes: task!.notes || "", due: task!.due_date, who, topic: t?.name ?? null, context, today: today() });
+    const clean = {
+      summary: String(a.summary || ""), steps: (a.steps || []).map(String).slice(0, 6),
+      actions: (a.actions || []).filter((x) => x && x.type && x.label).slice(0, 4).map((x) => ({ ...x, done: false })),
+      at: today(),
+    };
+    await env.DB.prepare(`UPDATE tasks SET ai = ? WHERE id = ?`).bind(JSON.stringify(clean), task!.id).run();
+    return json(clean);
+  }
+  if ((mm = p.match(/^\/api\/tasks\/(\d+)\/ai-done$/)) && m === "POST") {
+    await guard(env, "tasks", mm[1], me);
+    const { index } = await body<{ index?: number }>();
+    const r = await env.DB.prepare(`SELECT ai FROM tasks WHERE id = ?`).bind(Number(mm[1])).first<{ ai: string | null }>();
+    if (r?.ai && typeof index === "number") {
+      const a = JSON.parse(r.ai);
+      if (a.actions?.[index]) a.actions[index].done = true;
+      await env.DB.prepare(`UPDATE tasks SET ai = ? WHERE id = ?`).bind(JSON.stringify(a), Number(mm[1])).run();
+    }
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/tasks\/(\d+)$/)) && m === "DELETE") {

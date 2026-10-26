@@ -33,6 +33,8 @@ export interface Topic {
   private_to: string | null;
   /** Color de la tarjeta elegido por el usuario actual */
   color?: string | null;
+  /** Paneles que el usuario actual ha quitado (JSON) */
+  hidden?: string | null;
 }
 
 export interface User { email: string; name: string; fullName: string }
@@ -63,5 +65,16 @@ export interface MailAnalysis {
   due?: string | null; // YYYY-MM-DD
   events?: Array<{ title: string; date: string; time?: string; who?: string; place?: string; note?: string }>;
 }
+
+/** Ayuda de Claude para una tarea */
+export interface TaskAction {
+  type: "draft_email" | "create_task" | "create_event" | "add_fact" | "set_due" | "set_next_step";
+  label: string;
+  request?: string; lang?: string;          // draft_email
+  title?: string; date?: string; time?: string; place?: string; // create_task / create_event / set_due
+  key?: string; value?: string; text?: string;                  // add_fact / set_next_step
+  done?: boolean;
+}
+export interface TaskAssist { summary: string; steps: string[]; actions: TaskAction[]; at?: string }
 
 export interface Draft { to: string; subject: string; body: string; lang: string }

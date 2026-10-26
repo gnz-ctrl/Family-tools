@@ -58,6 +58,16 @@ const MIGRATIONS: string[][] = [
     `ALTER TABLE topics ADD COLUMN private_to TEXT`,
     `CREATE TABLE IF NOT EXISTS topic_colors (email TEXT NOT NULL, topic_id INTEGER NOT NULL REFERENCES topics(id), color TEXT NOT NULL, PRIMARY KEY (email, topic_id))`,
   ],
+  // 7 · ayuda de Claude guardada en cada tarea (JSON); la descripción va en tasks.notes
+  [
+    `ALTER TABLE tasks ADD COLUMN ai TEXT`,
+  ],
+  // 8 · paneles de cada tema: ocultos por persona y paneles de texto propios; gasto de la API
+  [
+    `CREATE TABLE IF NOT EXISTS topic_prefs (email TEXT NOT NULL, topic_id INTEGER NOT NULL REFERENCES topics(id), hidden TEXT, PRIMARY KEY (email, topic_id))`,
+    `CREATE TABLE IF NOT EXISTS topic_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, topic_id INTEGER NOT NULL REFERENCES topics(id), title TEXT NOT NULL, body TEXT, sort INTEGER NOT NULL DEFAULT 0)`,
+    `INSERT OR IGNORE INTO settings (k, v) VALUES ('api_spent_usd', '0')`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

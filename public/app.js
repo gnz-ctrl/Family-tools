@@ -69,8 +69,15 @@ function dueBadge(d) {
   if (n <= 7) return `<span class="badge warn">${fmt(d)}</span>`;
   return `<span class="badge">${fmt(d)}</span>`;
 }
-const fold = (key, summary, body, defOpen = false, id = "") => `<details class="fold" data-fold="${key}" ${id ? `id="${id}"` : ""} ${(uiOpen[key] ?? defOpen) ? "open" : ""}>
-  <summary>${summary}<span class="chev" aria-hidden="true">▾</span></summary><div class="fold-body">${body}</div></details>`;
+const PANELS = { tasks: "Pendientes", mails: "Correos recibidos", events: "Eventos", gastos: "Gastos fijos y suscripciones", subs: "Suscripciones", trip: "Planear un viaje", facts: "Datos clave", mail: "Escribir un email", hist: "Historial", contacts: "Contactos" };
+const fold = (key, summary, body, defOpen = false, id = "") => {
+  const panel = key.split("-")[0];
+  const x = currentTopic && PANELS[panel] ? `<button type="button" class="fold-x" data-hide-panel="${panel}" aria-label="Quitar panel" title="Quitar este panel">×</button>` : "";
+  return `<details class="fold" data-fold="${key}" data-panel="${panel}" ${id ? `id="${id}"` : ""} ${(uiOpen[key] ?? defOpen) ? "open" : ""}>
+  <summary>${summary}${x}<span class="chev" aria-hidden="true">▾</span></summary><div class="fold-body">${body}</div></details>`;
+};
+const hiddenOf = (t) => { try { return JSON.parse(t?.hidden || "[]"); } catch { return []; } };
+let addingPanel = false, delPanel = null;
 const foldTitle = (title, meta = "") => `<span class="fold-title">${title}</span>${meta ? `<span class="fold-meta">${meta}</span>` : ""}`;
 let pendingTaskDel = null, creatingTopic = false, editingTopic = null, deletingTopic = null, editingTask = null, sharingTopic = null;
 const COLORS = ["", "mint", "sky", "lilac", "peach", "sand", "rose", "sage", "slate"];
@@ -78,6 +85,23 @@ const COLOR_NAMES = { "": "Blanco", mint: "Menta", sky: "Cielo", lilac: "Lila", 
 const otherUser = () => S.users.find((u) => u.email !== S.me);
 const lock = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
 /** Formulario para editar o mover una tarea */
+const assistBusy = {}; // tareas a la espera de Claude
+const parseAI = (t) => { try { return t.ai ? JSON.parse(t.ai) : null; } catch { return null; } };
+const ACTION_HINT = { draft_email: "Abre el redactor con el borrador", create_task: "Nueva tarea", create_event: "Nuevo evento", add_fact: "Se guarda en Datos clave", set_due: "Cambia la fecha de esta tarea", set_next_step: "Cambia el próximo paso del tema" };
+function assistHTML(t) {
+  if (assistBusy[t.id]) return `<div class="assist"><p class="note-sim">Claude está leyendo la tarea…</p></div>`;
+  const a = parseAI(t);
+  if (!a) return `<div class="assist"><p class="note-sim">Escribe una descripción y pulsa «Guardar y pedir ayuda»: Claude te dirá qué hacer y podrá preparar cosas por ti (un email, recordatorios, eventos…).</p></div>`;
+  return `<div class="assist">
+    <div class="assist-head"><span class="spark" aria-hidden="true">✦</span><b>Claude sugiere</b><button class="link" type="button" data-ask="${t.id}">Volver a preguntar</button></div>
+    ${a.summary ? `<p>${esc(a.summary)}</p>` : ""}
+    ${a.steps?.length ? `<ol>${a.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>` : ""}
+    ${a.actions?.length ? `<div class="assist-acts">${a.actions.map((x, i) => x.done
+      ? `<span class="act-done">✓ ${esc(x.label)}</span>`
+      : `<button class="btn light" type="button" data-ai-act="${t.id}" data-i="${i}" title="${esc(ACTION_HINT[x.type] || "")}">${esc(x.label)}</button>`).join("")}</div>` : ""}
+  </div>`;
+}
+/** Ficha de una tarea: editar, mover, descripción y ayuda de Claude */
 function taskEditForm(t, tag = "li") {
   const topics = S.topics.filter((x) => x.slug !== "documentos");
   const who = [...S.users.map((u) => [u.email, u.name]), ["both", "Los dos"]];
@@ -86,20 +110,64 @@ function taskEditForm(t, tag = "li") {
     <select name="topic" aria-label="Tema"><option value="">Sin tema</option>${topics.map((x) => `<option value="${x.slug}" ${x.id === t.topic_id ? "selected" : ""}>${esc(x.name)}${x.private_to ? " (privado)" : ""}</option>`).join("")}</select>
     <input type="date" name="due" value="${t.due_date || ""}" aria-label="Fecha límite">
     <select name="assignee" aria-label="Para quién">${who.map(([v, l]) => `<option value="${v}" ${t.assignee === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
-    <span class="actions"><button class="btn" type="submit">Guardar</button><button class="link" type="button" data-task-edit-cancel>Cancelar</button></span>
-  </form></${tag}>`;
+    <textarea name="notes" rows="3" placeholder="Descripción: qué hay que hacer, referencias, con quién hablar…" aria-label="Descripción">${esc(t.notes || "")}</textarea>
+    <span class="actions"><button class="btn" type="submit" data-ask-on-save>Guardar y pedir ayuda</button><button class="btn light" type="submit">Guardar</button><button class="link" type="button" data-task-edit-cancel>Cerrar</button></span>
+  </form>${assistHTML(t)}</${tag}>`;
+}
+async function askClaude(id) {
+  assistBusy[id] = true; renderAll();
+  try { await post(`/api/tasks/${id}/assist`); } catch (e) { say("⚠ " + e.message, true); }
+  delete assistBusy[id]; await load(); renderAll();
+}
+async function runAction(taskId, i) {
+  const t = S.tasks.find((x) => x.id === taskId); const a = parseAI(t)?.actions?.[i]; if (!t || !a) return;
+  const topic = topicById(t.topic_id); const slug = topic?.slug;
+  try {
+    if (a.type === "draft_email") {
+      if (!slug) throw new Error("Asigna la tarea a un tema para poder redactar el email");
+      await post(`/api/tasks/${taskId}/ai-done`, { index: i });
+      editingTask = null; openTopic(slug, { scrollTo: "composer" });
+      await compose(slug, { request: a.request || t.title, lang: a.lang });
+      await load(); renderAll(); say("Borrador listo: revísalo y envíalo desde tu correo.");
+      return;
+    }
+    if (a.type === "create_task") await post("/api/tasks", { title: a.title || a.label, topic: slug || null, due_date: a.date || null });
+    else if (a.type === "create_event") {
+      const s2 = slug || topicBySlug("eventos")?.slug; if (!s2) throw new Error("No hay tema para el evento");
+      await post(`/api/topics/${s2}/events`, { title: a.title || a.label, date: a.date, time: a.time, place: a.place });
+    } else if (a.type === "add_fact") {
+      if (!slug) throw new Error("Asigna la tarea a un tema primero");
+      await post(`/api/topics/${slug}/items`, { kind: "fact", label: a.key || a.label, value: a.value || "" });
+    } else if (a.type === "set_due") await post(`/api/tasks/${taskId}`, { due_date: a.date }, "PATCH");
+    else if (a.type === "set_next_step") {
+      if (!slug) throw new Error("Asigna la tarea a un tema primero");
+      await post(`/api/topics/${slug}`, { next_step: a.text || a.label }, "PATCH");
+    }
+    await post(`/api/tasks/${taskId}/ai-done`, { index: i });
+    await load(); renderAll(); say(`Hecho: ${a.label}.`);
+  } catch (e) { say("⚠ " + e.message, true); }
 }
 
 /* =========================================================
    PORTADA
    ========================================================= */
+function renderMeter() {
+  const d = new Date();
+  $("m-date").textContent = d.toLocaleDateString("es-ES", { weekday: "short", day: "numeric", month: "short" });
+  const c = S.credit || {};
+  const b = $("m-credit");
+  b.textContent = c.left == null ? "— €" : `${c.left.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  b.classList.toggle("low", c.left != null && c.left < 2);
+  b.title = c.left == null ? "Pulsa para poner el saldo de la API" : `Gastado desde la última recarga: ${(c.spent || 0).toFixed(2).replace(".", ",")} €. Pulsa para actualizar el saldo.`;
+}
 function renderAll() {
   if (!S) return;
+  renderMeter();
   const open = S.tasks.filter((t) => t.status === "open").sort(byDue);
   const done = S.tasks.filter((t) => t.status === "done").sort((a, b) => (a.completed_at < b.completed_at ? 1 : -1)).slice(0, 30);
   const row = (t) => editingTask === t.id ? taskEditForm(t) : `<li class="${t.status === "done" ? "done" : ""}">
     <input type="checkbox" id="cb-${t.id}" data-task="${t.id}" ${t.status === "done" ? "checked" : ""} aria-label="Hecha">
-    <button type="button" class="tt" data-task-edit="${t.id}" title="Editar o mover a otro tema">${esc(t.title)}</button>
+    <button type="button" class="tt" data-task-edit="${t.id}" title="Abrir la tarea">${esc(t.title)}${t.ai ? `<span class="tmark" title="Claude ha sugerido qué hacer">✦</span>` : t.notes ? `<span class="tmark" title="Tiene descripción">≡</span>` : ""}</button>
     <span class="tm">${esc(tName(t.topic_id))}</span>
     <span class="tw">${esc(userName(t.status === "done" ? t.completed_by : t.assignee))}</span>
     <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span>
@@ -235,7 +303,7 @@ function renderTopic(slug) {
     <div class="full">
       ${fold("tasks-" + slug, foldTitle("Pendientes", v.open.length ? String(v.open.length) : ""), (v.open.length ? v.open.map((x) => editingTask === x.id ? taskEditForm(x, "div") : `<div class="mini-task">
           <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
-          <button type="button" class="grow tt-mini" data-task-edit="${x.id}" title="Editar o mover a otro tema">${esc(x.title)}<span class="foot">${esc(userName(x.assignee))}</span></button>${dueBadge(x.due_date)}
+          <button type="button" class="grow tt-mini" data-task-edit="${x.id}" title="Abrir la tarea"><span>${esc(x.title)}${x.ai ? `<span class="tmark">✦</span>` : x.notes ? `<span class="tmark">≡</span>` : ""}</span><span class="foot">${esc(userName(x.assignee))}</span></button>${dueBadge(x.due_date)}
           ${pendingTaskDel === x.id ? `<button class="tdel on" type="button" data-task-del-ok="${x.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${x.id}" aria-label="Borrar tarea">×</button>`}</div>`).join("") : empty("No hay nada pendiente en este tema."))
         + `<form class="item-form" id="add-task"><input type="text" id="at-title" placeholder="Nueva tarea" aria-label="Nueva tarea"><input type="date" id="at-due" aria-label="Fecha límite"><button class="btn light" type="submit">Añadir</button></form>`, true)}
       ${mailsHTML(v.mails)}
@@ -246,11 +314,61 @@ function renderTopic(slug) {
       ${composerHTML(slug)}
       ${fold("hist-" + slug, foldTitle("Historial"), `<form class="note-form" id="note-form"><input type="text" id="note-text" placeholder="Añadir una nota (pasa a ser el estado actual)" aria-label="Nota"><button class="btn" type="submit">Guardar</button></form>
           ${v.history.length ? `<ul class="timeline">${v.history.slice(0, 30).map((h) => `<li><time>${esc(fmt(h.at))}</time><div>${esc(h.text)}<div class="src">vía ${esc(h.source)}</div></div></li>`).join("")}</ul>` : empty("Todavía no hay historial.")}`)}
-      ${fold("contacts-" + slug, foldTitle("Contactos"), itemList(v.contacts) + itemForm("contact", "Quién (p. ej. Secretaría)", "Email o teléfono"))}
-    </div>`;
+      ${fold("contacts-" + slug, foldTitle("Contactos", v.contacts.length ? String(v.contacts.length) : ""), contactsBody(slug, v.contacts), slug === "colegio")}
+      ${(S.panels || []).filter((cp) => cp.topic_id === t.id).map((cp) => `<details class="fold" data-fold="cp${cp.id}" ${uiOpen["cp" + cp.id] ? "open" : ""}>
+        <summary>${foldTitle(esc(cp.title), cp.body ? "" : "vacío")}${delPanel === cp.id
+          ? `<button type="button" class="fold-x on" data-del-panel-ok="${cp.id}">Borrar</button>`
+          : `<button type="button" class="fold-x" data-del-panel="${cp.id}" aria-label="Borrar panel" title="Borrar este panel">×</button>`}<span class="chev" aria-hidden="true">▾</span></summary>
+        <div class="fold-body"><textarea class="panel-body" data-panel-body="${cp.id}" rows="5" placeholder="Escribe aquí lo que quieras: se guarda solo.">${esc(cp.body || "")}</textarea></div></details>`).join("")}
+    </div>
+    ${addPanelHTML(slug, t)}`;
 
-  if (slug === "viajes") $("trip-slot").appendChild(tripPanel);
+  const hidden = hiddenOf(t);
+  $("topic-detail").querySelectorAll("details.fold[data-panel]").forEach((d) => { if (hidden.includes(d.dataset.panel)) d.remove(); });
+  if (slug === "viajes") $("trip-slot")?.appendChild(tripPanel);
   wireTopic(slug, v);
+}
+
+/* ---------- contactos por apartados (en Colegios: General y cada hijo) ---------- */
+const KIDS = ["Valentina", "Paul", "Santiago"];
+const presetTo = {}; // email elegido desde Contactos para el próximo borrador
+const cExtra = (c) => { try { return c.extra ? JSON.parse(c.extra) : {}; } catch { return {}; } };
+const isEmail = (x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || "");
+function contactsBody(slug, contacts) {
+  const used = contacts.map((c) => cExtra(c).g || "General");
+  const groups = [...new Set([...(slug === "colegio" ? ["General", ...KIDS] : ["General"]), ...used])];
+  const one = (c) => {
+    const x = cExtra(c), mail = isEmail(c.value) ? c.value : "", tel = x.tel || (!mail ? c.value : "");
+    return `<div class="ci"><div class="ci-top"><b>${esc(c.label)}</b><button class="tdel" type="button" data-item-del="${c.id}" aria-label="Quitar contacto" title="Quitar">×</button></div>
+      ${mail ? `<button type="button" class="ci-mail" data-mail-to="${esc(mail)}" title="Escribir un email a ${esc(mail)}">✉ ${esc(mail)}</button>` : ""}
+      ${tel ? `<a class="ci-tel" href="tel:${esc(tel.replace(/[^\d+]/g, ""))}">☎ ${esc(tel)}</a>` : ""}</div>`;
+  };
+  return `<div class="cgrid">${groups.map((g) => {
+      const list = contacts.filter((c) => (cExtra(c).g || "General") === g);
+      return `<div class="cgroup"><h5>${esc(g)}</h5>${list.map(one).join("") || `<span class="ci-empty">—</span>`}</div>`;
+    }).join("")}</div>
+    <form class="contact-form" id="contact-form">
+      <select id="cf-g" aria-label="Apartado">${groups.map((g) => `<option>${esc(g)}</option>`).join("")}</select>
+      <input type="text" id="cf-name" placeholder="Quién (p. ej. Tutora)" aria-label="Quién">
+      <input type="email" id="cf-mail" placeholder="Email" aria-label="Email">
+      <input type="tel" id="cf-tel" placeholder="Teléfono" aria-label="Teléfono">
+      <button class="btn light" type="submit">Añadir</button>
+    </form>`;
+}
+
+/* ---------- añadir / quitar paneles ---------- */
+function addPanelHTML(slug, t) {
+  const avail = Object.keys(PANELS).filter((k) => (k !== "gastos" && k !== "subs" || slug === "finanzas") && (k !== "trip" || slug === "viajes"));
+  const hidden = hiddenOf(t).filter((k) => avail.includes(k));
+  if (!addingPanel) return `<div class="add-panel"><button class="link" type="button" id="ap-open">+ Añadir panel</button>${hidden.length ? `<span class="note-sim">${plural(hidden.length, "panel oculto", "paneles ocultos")}</span>` : ""}</div>`;
+  return `<div class="add-panel open">
+    ${hidden.length ? `<div class="ap-row"><span class="note-sim">Volver a mostrar:</span>${hidden.map((k) => `<button class="btn light" type="button" data-show-panel="${k}">${PANELS[k]}</button>`).join("")}</div>` : ""}
+    <form class="item-form" id="ap-form"><input type="text" id="ap-title" placeholder="Panel de texto nuevo (p. ej. Contraseñas wifi, Notas)" aria-label="Nombre del panel" maxlength="60"><button class="btn light" type="submit">Crear</button><button class="link" type="button" id="ap-close">Cerrar</button></form>
+  </div>`;
+}
+function setHidden(slug, list) {
+  const t = topicBySlug(slug); t.hidden = JSON.stringify(list); renderTopic(slug);
+  post(`/api/topics/${slug}/hidden`, { hidden: list }, "PUT").catch((e) => say("⚠ " + e.message, true));
 }
 
 /* ---------- documentos compartidos ---------- */
@@ -439,7 +557,9 @@ async function compose(slug, { request = "", lang, mailId } = {}) {
   if (currentTopic === slug) renderTopic(slug);
   try {
     const d = await post("/api/draft", { topic: slug, request, lang, mailId });
-    drafts[slug] = { stage: "draft", request, lang: d.lang, mailId, to: d.to, subject: d.subject, body: d.body, msg: "" };
+    const to = !mailId && presetTo[slug] ? presetTo[slug] : d.to;
+    delete presetTo[slug];
+    drafts[slug] = { stage: "draft", request, lang: d.lang, mailId, to, subject: d.subject, body: d.body, msg: "" };
   } catch (e) {
     delete drafts[slug]; say("⚠ " + e.message, true);
   }
@@ -456,7 +576,7 @@ function wireTopic(slug, v) {
   const box = $("topic-detail");
   box.querySelectorAll("[data-fold]").forEach((f) => f.addEventListener("toggle", () => (uiOpen[f.dataset.fold] = f.open)));
 
-  $("note-form").addEventListener("submit", (e) => {
+  $("note-form")?.addEventListener("submit", (e) => {
     e.preventDefault(); const text = $("note-text").value.trim(); if (!text) return;
     act(() => post(`/api/topics/${slug}/note`, { text }), "Nota guardada.");
   });
@@ -476,12 +596,52 @@ function wireTopic(slug, v) {
     act(() => post(`/api/topics/${slug}`, { name: $("et-name").value, status_summary: $("et-status").value, next_step: $("et-next").value, email_to: $("et-to").value, email_lang: $("et-lang").value }, "PATCH"), "Tema guardado.");
   });
 
+  // paneles: quitar, mostrar, crear y editar paneles de texto
+  box.querySelectorAll("[data-hide-panel]").forEach((b) => b.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const k = b.dataset.hidePanel; setHidden(slug, [...new Set([...hiddenOf(v.t), k])]);
+    say(`Panel «${PANELS[k]}» quitado. Puedes volver a mostrarlo con «+ Añadir panel».`);
+  }));
+  box.querySelectorAll("[data-show-panel]").forEach((b) => b.addEventListener("click", () => setHidden(slug, hiddenOf(v.t).filter((k) => k !== b.dataset.showPanel))));
+  $("ap-open")?.addEventListener("click", () => { addingPanel = true; renderTopic(slug); $("ap-title")?.focus(); });
+  $("ap-close")?.addEventListener("click", () => { addingPanel = false; renderTopic(slug); });
+  $("ap-form")?.addEventListener("submit", (e) => {
+    e.preventDefault(); const title = $("ap-title").value.trim(); if (!title) return;
+    addingPanel = false;
+    act(() => post(`/api/topics/${slug}/panels`, { title }), `Panel «${title}» creado.`).then((r) => { if (r?.id) { uiOpen["cp" + r.id] = true; renderTopic(slug); } }).catch(() => {});
+  });
+  box.querySelectorAll("[data-del-panel]").forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); delPanel = +b.dataset.delPanel; renderTopic(slug); }));
+  box.querySelectorAll("[data-del-panel-ok]").forEach((b) => b.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation(); delPanel = null; act(() => post(`/api/panels/${b.dataset.delPanelOk}`, {}, "DELETE"), "Panel borrado.");
+  }));
+  box.querySelectorAll("[data-panel-body]").forEach((ta) => {
+    let timer;
+    const save = () => { clearTimeout(timer); const cp = S.panels.find((x) => x.id === +ta.dataset.panelBody); if (!cp || cp.body === ta.value) return;
+      cp.body = ta.value; post(`/api/panels/${cp.id}`, { body: ta.value }, "PATCH").then(() => say("Guardado.")).catch((e) => say("⚠ " + e.message, true)); };
+    ta.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(save, 1200); });
+    ta.addEventListener("blur", save);
+  });
+
   // color y compartir
   box.querySelectorAll("[data-swatch]").forEach((b) => b.addEventListener("click", () =>
     act(() => post(`/api/topics/${slug}/color`, { color: b.dataset.swatch }, "PUT"), `Color: ${COLOR_NAMES[b.dataset.swatch]}.`)));
   $("share")?.addEventListener("click", () => { sharingTopic = slug; renderTopic(slug); });
   $("share-no")?.addEventListener("click", () => { sharingTopic = null; renderTopic(slug); });
   $("share-ok")?.addEventListener("click", () => { sharingTopic = null; act(() => post(`/api/topics/${slug}/share`), `«${v.t.name}» ahora lo veis los dos.`); });
+
+  // contactos: añadir y escribir un email desde ellos
+  $("contact-form")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const label = $("cf-name").value.trim(), mail = $("cf-mail").value.trim(), tel = $("cf-tel").value.trim();
+    if (!label) { say("Escribe quién es el contacto.", true); return; }
+    uiOpen["contacts-" + slug] = true;
+    act(() => post(`/api/topics/${slug}/items`, { kind: "contact", label, value: mail || tel, extra: JSON.stringify({ g: $("cf-g").value, tel }) }), "Contacto guardado.");
+  });
+  box.querySelectorAll("[data-mail-to]").forEach((b) => b.addEventListener("click", () => {
+    presetTo[slug] = b.dataset.mailTo; uiOpen["mail-" + slug] = true; renderTopic(slug);
+    $("composer")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const r = $("c-req"); if (r) { r.placeholder = `¿Qué quieres decirle a ${b.dataset.mailTo}? (p. ej. «Paul no irá mañana, tiene médico»)`; r.focus(); }
+  }));
 
   // datos clave y contactos
   box.querySelectorAll("[data-item-form]").forEach((f) => f.addEventListener("submit", (e) => {
@@ -511,7 +671,7 @@ function wireTopic(slug, v) {
     const id = +b.dataset.m, a = b.dataset.mail;
     if (a === "task") act(() => post(`/api/mails/${id}`, { action: "task" }), "Tarea creada.");
     if (a === "archive") act(() => post(`/api/mails/${id}`, { action: "archive" }), "Correo archivado.");
-    if (a === "reply") { compose(slug, { mailId: id }); $("composer").scrollIntoView({ block: "start", behavior: "smooth" }); }
+    if (a === "reply") { compose(slug, { mailId: id }); $("composer")?.scrollIntoView({ block: "start", behavior: "smooth" }); }
   }));
 
   // eventos
@@ -539,11 +699,11 @@ function wireTopic(slug, v) {
   box.querySelectorAll("[data-sub-del]").forEach((b) => b.addEventListener("click", () => act(() => post(`/api/expenses/${b.dataset.subDel}`, {}, "DELETE"), "Quitado.")));
   box.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", () => {
     compose(slug, { request: `Cancelar mi suscripción a «${b.dataset.cancel}» con efecto en la próxima renovación y pedir confirmación por escrito. Deja el destinatario en blanco.`, lang: "es" });
-    $("composer").scrollIntoView({ block: "start", behavior: "smooth" });
+    $("composer")?.scrollIntoView({ block: "start", behavior: "smooth" });
   }));
 
   // redactor
-  $("c-form").addEventListener("submit", (e) => {
+  $("c-form")?.addEventListener("submit", (e) => {
     e.preventDefault(); compose(slug, { request: $("c-req").value.trim(), lang: $("c-lang").value });
   });
   const dr = drafts[slug]; if (!dr || dr.stage === "loading") return;
@@ -560,7 +720,7 @@ function wireTopic(slug, v) {
     } catch (err) { dr.msg = "⚠ " + err.message; }
     dr.working = false; renderTopic(slug);
   });
-  $("composer").addEventListener("click", (e) => {
+  $("composer")?.addEventListener("click", (e) => {
     const a = e.target.closest("[data-act]")?.dataset.act; if (!a) return;
     if (a === "copy") return copyText(`${dr.subject}\n\n${dr.body}`, e.target);
     if (a === "mark") { dr.stage = "confirm"; return renderTopic(slug); }
@@ -579,7 +739,7 @@ function wireTopic(slug, v) {
    ========================================================= */
 function showTab(name) {
   if (name !== "tema") currentTopic = null;
-  editingTopic = deletingTopic = sharingTopic = null; editingTask = null;
+  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; addingPanel = false; delPanel = null;
   $("tab-temas").hidden = name !== "temas";
   $("tab-tema").hidden = name !== "tema";
 }
@@ -596,6 +756,8 @@ document.addEventListener("click", (e) => {
   const ed = e.target.closest("[data-task-edit]");
   if (ed) { editingTask = +ed.dataset.taskEdit; pendingTaskDel = null; renderAll(); return; }
   if (e.target.closest("[data-task-edit-cancel]")) { editingTask = null; renderAll(); return; }
+  const ask = e.target.closest("[data-ask]"); if (ask) { askClaude(+ask.dataset.ask); return; }
+  const aiAct = e.target.closest("[data-ai-act]"); if (aiAct) { aiAct.disabled = true; runAction(+aiAct.dataset.aiAct, +aiAct.dataset.i); return; }
   const d = e.target.closest("[data-task-del]"), ok = e.target.closest("[data-task-del-ok]");
   if (d) { pendingTaskDel = +d.dataset.taskDel; renderAll(); if (currentTopic) renderTopic(currentTopic); }
   else if (ok) { pendingTaskDel = null; act(() => post(`/api/tasks/${ok.dataset.taskDelOk}`, {}, "DELETE"), "Tarea borrada."); }
@@ -607,9 +769,11 @@ document.addEventListener("submit", (e) => {
   const id = f.dataset.taskForm, topic = f.elements.topic.value;
   const before = S.tasks.find((t) => t.id === +id);
   const moved = (before?.topic_id ?? null) !== (topicBySlug(topic)?.id ?? null);
-  editingTask = null;
-  act(() => post(`/api/tasks/${id}`, { title: f.elements.title.value, topic: topic || null, due_date: f.elements.due.value || null, assignee: f.elements.assignee.value }, "PATCH"),
-    moved ? `Tarea movida a ${topic ? topicBySlug(topic).name : "Sin tema"}.` : "Tarea guardada.");
+  const ask = !!e.submitter?.hasAttribute("data-ask-on-save");
+  if (!ask) editingTask = null;
+  act(() => post(`/api/tasks/${id}`, { title: f.elements.title.value, topic: topic || null, due_date: f.elements.due.value || null, assignee: f.elements.assignee.value, notes: f.elements.notes.value }, "PATCH"),
+    moved ? `Tarea movida a ${topic ? topicBySlug(topic).name : "Sin tema"}.` : "Tarea guardada.")
+    .then(() => { if (ask) askClaude(+id); }).catch(() => {});
 });
 document.addEventListener("change", (e) => {
   const id = e.target.dataset?.task; if (!id) return;
@@ -627,6 +791,15 @@ async function refresh(showMsg) {
   b.classList.remove("spin");
 }
 $("refresh").addEventListener("click", () => refresh(true));
+$("m-credit").addEventListener("click", () => { const f = $("credit-form"); f.hidden = !f.hidden; if (!f.hidden) $("cr-eur").focus(); });
+$("cr-cancel").addEventListener("click", () => ($("credit-form").hidden = true));
+$("credit-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const eur = parseFloat($("cr-eur").value.replace(/\./g, "").replace(",", "."));
+  if (!(eur >= 0)) { say("Escribe el saldo en euros, por ejemplo 18,50.", true); return; }
+  $("credit-form").hidden = true; $("cr-eur").value = "";
+  act(() => post("/api/credit", { eur }, "PUT"), "Saldo actualizado.");
+});
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S) refresh(false); });
 
 /* ---------- entrada rápida ---------- */
@@ -672,9 +845,9 @@ $("dest").innerHTML = Object.entries(CITIES).map(([k, c]) => `<option value="${k
 const PEOPLE = [
   { key: "g", name: "Gonzalo", kind: "adulto", on: true },
   { key: "s", name: "Sabrina", kind: "adulto", on: true },
-  { key: "h1", name: "Hijo 1", kind: "niño", age: 8, on: true },
-  { key: "h2", name: "Hijo 2", kind: "niño", age: 6, on: true },
-  { key: "h3", name: "Hijo 3", kind: "niño", age: 1, on: false },
+  { key: "h1", name: "Valentina", kind: "niño", age: 8, on: true },
+  { key: "h2", name: "Paul", kind: "niño", age: 6, on: true },
+  { key: "h3", name: "Santiago", kind: "niño", age: 3, on: true },
 ];
 const trip = { flight: null };
 const going = () => PEOPLE.filter((p) => p.on);

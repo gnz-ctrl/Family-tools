@@ -1,4 +1,4 @@
-import type { Classification, Draft, Env, MailAnalysis, Topic } from "./types";
+import type { Classification, Draft, Env, MailAnalysis, TaskAssist, Topic } from "./types";
 
 const API = "https://api.anthropic.com/v1/messages";
 type Content = Array<{ type: string; input?: unknown; text?: string }>;
@@ -15,7 +15,19 @@ async function callClaude(env: Env, body: Record<string, unknown>, maxTokens = 1
     body: JSON.stringify({ model: env.CLAUDE_MODEL, max_tokens: maxTokens, ...body }),
   });
   if (!res.ok) throw new Error(`Claude API ${res.status}: ${await res.text()}`);
-  return ((await res.json()) as { content: Content }).content;
+  const data = (await res.json()) as { content: Content; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
+  await trackSpend(env, data.usage);
+  return data.content;
+}
+
+/** Precio en USD por millón de tokens (entrada, salida). */
+const PRICES: Record<string, [number, number]> = { "claude-sonnet-5-5": [2, 10] };
+/** Suma el coste de cada llamada para mostrar el saldo que queda (estimado). */
+async function trackSpend(env: Env, u?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }) {
+  if (!u) return;
+  const [pin, pout] = PRICES[env.CLAUDE_MODEL] ?? [2, 10];
+  const usd = ((u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) * 1.25 + (u.cache_read_input_tokens ?? 0) * 0.1) * pin / 1e6 + (u.output_tokens ?? 0) * pout / 1e6;
+  try { await env.DB.prepare(`UPDATE settings SET v = CAST(v AS REAL) + ? WHERE k = 'api_spent_usd'`).bind(usd).run(); } catch { /* no bloquear por esto */ }
 }
 
 /** Pide a Claude una respuesta en JSON y la extrae del texto. */
@@ -31,7 +43,7 @@ async function askJSON<T>(env: Env, system: string, user: string, maxTokens = 15
 }
 
 const FAMILY = `Eres el asistente de organización de una familia que vive en Berlín (Alemania): Gonzalo y Sabrina,
-con hijos en el colegio. Hablan español; muchos trámites son en alemán.`;
+y sus hijos Valentina, Paul y Santiago. Hablan español; muchos trámites son en alemán.`;
 
 /* ------------------------------------------------------------------------------------------ */
 
@@ -101,6 +113,44 @@ Firma: ${input.signer}.
 Devuelve: {"subject":"...","body":"texto completo con saludo y firma"}`,
   `Tema: ${input.topic.name}\n${input.context}\n\n${task}`, 1500);
   return { to: "", subject: d.subject, body: d.body, lang: input.lang };
+}
+
+/** Analiza una tarea con su descripción y propone pasos y acciones que la plataforma puede hacer. */
+export async function assistTask(
+  env: Env,
+  input: { task: string; notes: string; due: string | null; who: string; topic: string | null; context: string; today: string },
+): Promise<TaskAssist> {
+  if (env.MOCK_CLAUDE) return {
+    summary: `Prueba simulada para «${input.task}».`, steps: ["Revisar la descripción", "Escribir al organismo"],
+    actions: [
+      ...(input.topic ? [{ type: "draft_email" as const, label: "Redactar el email", request: input.task, lang: "de" }] : []),
+      { type: "create_task", label: "Crear recordatorio", title: "Llamar si no responden", date: "2026-11-20" },
+      { type: "set_due", label: "Poner fecha límite", date: "2026-11-15" },
+    ],
+  };
+  const withTopic = input.topic
+    ? `- draft_email: {"request":"qué debe conseguir el email","lang":"de|es|en"}: Claude redactará un borrador que la familia revisará y enviará.
+- add_fact: {"key":"nombre del dato","value":"valor"}: guardar un dato útil del tema (número de cliente, plazo...). Solo si aparece en la descripción o el contexto.
+- set_next_step: {"text":"..."}: actualizar el próximo paso del tema.
+- create_event: {"title":"...","date":"YYYY-MM-DD","time":"HH:MM","place":"..."}: una cita con fecha concreta.`
+    : `- create_event: {"title":"...","date":"YYYY-MM-DD","time":"HH:MM","place":"..."}: una cita con fecha concreta.`;
+  return askJSON<TaskAssist>(env, `${FAMILY}
+Ayudas a resolver una tarea concreta. Lee la tarea, su descripción y el contexto del tema, y propone qué hacer.
+Hoy es ${input.today}.
+Devuelve:
+{"summary":"1-2 frases en español: qué hay que hacer y lo más importante a tener en cuenta",
+ "steps":["pasos concretos y cortos, en orden (máximo 6)"],
+ "actions":[{"type":"...","label":"texto corto del botón, en español", ...campos}]}
+Acciones posibles (solo las que de verdad ayuden; máximo 4; puede ser []):
+${withTopic}
+- create_task: {"title":"...","date":"YYYY-MM-DD o null"}: una subtarea o recordatorio de seguimiento.
+- set_due: {"date":"YYYY-MM-DD"}: poner o cambiar la fecha límite de esta tarea, si se deduce un plazo.
+Reglas: no inventes datos, plazos ni direcciones; si falta información, dilo en un paso ("Buscar el número de cliente en…").
+Las acciones solo se ejecutan si la familia pulsa el botón.`,
+  `Tarea: ${input.task}
+Para: ${input.who}${input.due ? `\nFecha límite: ${input.due}` : ""}
+Descripción: ${input.notes || "(sin descripción)"}
+${input.topic ? `Tema: ${input.topic}\n${input.context}` : "Sin tema asignado."}`, 1500);
 }
 
 /** Aplica una corrección pedida en lenguaje natural ("más corto", "pásalo a inglés"...). */
