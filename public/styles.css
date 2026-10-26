@@ -477,3 +477,26 @@ img, video, iframe, table { max-width: 100%; }
   .topic-head h2 { font-size: 1.3rem; }
 }
 @media (max-width: 900px) { section { margin-top: 4px; } .overview { margin-top: 12px; } }
+/* Contactos en el móvil: una caja fina por apartado, de lado a lado */
+@media (max-width: 640px) {
+  .cgrid { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .cgroup { grid-template-columns: 74px minmax(0, 1fr); gap: 2px 8px; padding: 6px 8px; align-items: baseline; }
+  .cgroup h5 { grid-row: 1 / span 9; font-size: .66rem; }
+  .ci { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; }
+  .ci + .ci { padding-top: 3px; }
+  .ci-top { display: contents; }
+  .ci-top b { font-size: .8rem; }
+  .ci-mail, .ci-tel { font-size: .76rem; }
+  .ci-top .tdel { order: 9; margin-left: auto; width: 18px; height: 18px; }
+}
+@media (max-width: 640px) {
+  .cgroup { row-gap: 0; grid-auto-rows: min-content; }
+  .cgroup h5 { grid-row: 1 / span 20; }
+  .ci + .ci { margin-top: 3px; }
+  .contact-form { gap: 4px; }
+  .contact-form .btn { padding: 6px 14px; }
+}
+@media (max-width: 640px) {
+  .cgroup h5 { grid-row: auto; grid-column: 1; }
+  .cgroup .ci, .cgroup .ci-empty { grid-column: 2; }
+}
