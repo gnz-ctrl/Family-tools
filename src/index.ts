@@ -1,4 +1,6 @@
 import PostalMime from "postal-mime";
+import { EmailMessage } from "cloudflare:email";
+import { inviteMime } from "./mail";
 import { allowedSenders, getUser } from "./auth";
 import { analyzeMail, assistTask, classify, draftEmail, reviseEmail } from "./claude";
 import { ensureSchema, resetDemo } from "./db";
@@ -98,22 +100,23 @@ function recipients(env: Env, who: string): User[] {
   if (who === "b") return u;
   return u.filter((x) => x.name.toLowerCase().startsWith(who));
 }
-const b64 = (s: string) => { const bytes = new TextEncoder().encode(s); let bin = ""; bytes.forEach((b) => (bin += String.fromCharCode(b))); return btoa(bin); };
 async function sendInvite(env: Env, ev: CalEvent, method: "REQUEST" | "CANCEL", to: User[], fromName: string, update = false) {
   if (!to.length) return;
   const from = env.MAIL_FROM || "calendario@sbkperez.me";
   const ics = buildInvite(ev, method, { email: from, name: "Family Hub" }, to);
   const fecha = new Date(ev.date + "T12:00:00Z").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+  const hora = (ev.time || "").match(/\d{1,2}:\d{2}(?:\s*[–-]\s*\d{1,2}:\d{2})?/)?.[0] || ""; // solo la hora, sin comentarios
   const linea = `${ev.title} · ${fecha}${ev.time ? `, ${ev.time}` : ""}${ev.place ? ` · ${ev.place}` : ""}`;
-  const subject = method === "CANCEL" ? `Cancelado: ${ev.title}` : `${update ? "Cambio" : "Invitación"}: ${ev.title} (${fecha}${ev.time ? `, ${ev.time}` : ""})`;
+  const subject = method === "CANCEL" ? `Cancelado: ${ev.title}` : `${update ? "Cambio" : "Invitación"}: ${ev.title} · ${fecha}${hora ? `, ${hora}` : ""}`;
   const intro = method === "CANCEL" ? `${fromName} ha cancelado este evento:` : update ? `${fromName} ha cambiado este evento:` : `${fromName} te invita a:`;
   const text = `${intro}\n\n${linea}${ev.note ? `\n${ev.note}` : ""}\n\n${method === "CANCEL" ? "Si ya estaba en tu calendario, se quitará al abrir este correo." : "Ábrelo en tu calendario o responde Sí / No desde la tarjeta del evento."}\n\n— Family Hub · sbkperez.me`;
-  const html = `<p>${esc(intro)}</p><p style="font-size:16px"><b>${esc(ev.title)}</b><br>${esc(fecha)}${ev.time ? `, ${esc(ev.time)}` : ""}${ev.place ? `<br>${esc(ev.place)}` : ""}${ev.note ? `<br><i>${esc(ev.note)}</i>` : ""}</p><p style="color:#5b6672">— Family Hub · <a href="https://sbkperez.me">sbkperez.me</a></p>`;
+  const html = `<!doctype html><html lang="es"><body><p>${esc(intro)}</p><p style="font-size:16px"><b>${esc(ev.title)}</b><br>${esc(fecha)}${ev.time ? `, ${esc(ev.time)}` : ""}${ev.place ? `<br>${esc(ev.place)}` : ""}${ev.note ? `<br><i>${esc(ev.note)}</i>` : ""}</p><p style="color:#5b6672">— Family Hub · <a href="https://sbkperez.me">sbkperez.me</a></p></body></html>`;
   if (env.DEV_MODE === "true" || !env.EMAIL) { console.log(`[email simulado] ${subject} → ${to.map((u) => u.email).join(", ")}\n${ics}`); return; }
-  await env.EMAIL.send({
-    from, to: to.map((u) => u.email), subject, text, html,
-    attachments: [{ filename: method === "CANCEL" ? "cancelacion.ics" : "invitacion.ics", content: b64(ics), type: `text/calendar; charset=utf-8; method=${method}`, disposition: "attachment" }],
-  });
+  // Un email por persona, con el .ics dentro del cuerpo (como hacen Google y Outlook) para que salga la tarjeta Sí / No
+  for (const u of to) {
+    const raw = inviteMime({ from, fromName: "Family Hub", to: u.email, subject, text, html, ics, method, domain: from.split("@")[1] || "sbkperez.me" });
+    await env.EMAIL.send(new EmailMessage(from, u.email, raw));
+  }
 }
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 const nameOf = (env: Env, email: string) => users(env).find((u) => u.email === email)?.name || email;

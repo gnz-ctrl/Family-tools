@@ -2,7 +2,7 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   /** Envío de emails (invitaciones de calendario). Solo a direcciones verificadas en Email Routing. */
-  EMAIL?: { send(message: Record<string, unknown>): Promise<{ messageId: string }> };
+  EMAIL?: { send(message: EmailMessage | Record<string, unknown>): Promise<unknown> };
   /** Dirección desde la que salen las invitaciones */
   MAIL_FROM?: string;
   ANTHROPIC_API_KEY: string;

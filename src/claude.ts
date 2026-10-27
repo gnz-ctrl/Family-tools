@@ -85,11 +85,13 @@ Devuelve:
  "subject":"asunto original","lang":"idioma del correo en español (Alemán, Inglés, Español...)",
  "intent":"qué quieren o qué comunican, 1-2 frases claras en español",
  "todo":"qué tiene que hacer la familia, concreto, en español","due":"YYYY-MM-DD o null",
- "events":[{"title":"en español, con el término original entre paréntesis si es útil","date":"YYYY-MM-DD","time":"HH:MM–HH:MM o texto","who":"a qué hijo/clase afecta","place":"...","note":"qué llevar o preparar"}]}
+ "events":[{"title":"en español, con el término original entre paréntesis si es útil","date":"YYYY-MM-DD","time":"solo HH:MM o HH:MM–HH:MM (hora de Berlín), o vacío","who":"a qué hijo/clase afecta","place":"...","note":"qué llevar o preparar"}]}
 Reglas:
 - events: solo citas con fecha concreta (reuniones, excursiones, fiestas, días sin clase...). Si no hay, [].
 - due: el plazo más cercano para actuar (o la fecha del primer evento si hay que decidir algo).
 - Fechas sin año: el año que haga que la fecha sea futura respecto a hoy.
+- La familia vive en Berlín: las horas del correo son hora de Berlín. Si el texto reenviado muestra otra zona horaria (p. ej. porque se leyó desde el extranjero), conviértela a hora de Berlín.
+- En "time" pon solo la hora; duraciones, dudas o comentarios van en "note".
 - No inventes datos.`, `Asunto: ${input.subject}\n\n${input.text.slice(0, 12000)}`, 2000);
 }
 
