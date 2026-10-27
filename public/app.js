@@ -392,9 +392,14 @@ function contactsBody(slug, contacts) {
   const used = contacts.map((c) => cExtra(c).g || "General");
   const groups = [...new Set([...(slug === "colegio" ? ["General", ...KIDS] : ["General"]), ...used])];
   const one = (c) => {
-    const x = cExtra(c), mail = isEmail(c.value) ? c.value : "", tel = x.tel || (!mail ? c.value : "");
+    const x = cExtra(c), v = (c.value || "").trim();
+    const mail = isEmail(v) ? v : "";
+    const looksTel = /^[+\d][\d\s/().-]{4,}$/.test(v);
+    const tel = x.tel || (!mail && looksTel ? v : "");
+    const note = !mail && v && v !== tel ? v : ""; // texto libre en lugar de email
     return `<div class="ci"><div class="ci-top"><b>${esc(c.label)}</b><button class="tdel" type="button" data-item-del="${c.id}" aria-label="Quitar contacto" title="Quitar">×</button></div>
       ${mail ? `<button type="button" class="ci-mail" data-mail-to="${esc(mail)}" title="Escribir un email a ${esc(mail)}">✉ ${esc(mail)}</button>` : ""}
+      ${note ? `<span class="ci-note">${esc(note)}</span>` : ""}
       ${tel ? `<a class="ci-tel" href="tel:${esc(tel.replace(/[^\d+]/g, ""))}">☎ ${esc(tel)}</a>` : ""}</div>`;
   };
   return `<div class="cgrid">${groups.map((g) => {
@@ -404,7 +409,7 @@ function contactsBody(slug, contacts) {
     ${addingContact == null ? "" : `<form class="contact-form" id="contact-form">
       <select id="cf-g" aria-label="Apartado">${groups.map((g) => `<option ${g === addingContact ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
       <input type="text" id="cf-name" placeholder="Quién (p. ej. Tutora)" aria-label="Quién">
-      <input type="email" id="cf-mail" placeholder="Email" aria-label="Email">
+      <input type="text" id="cf-mail" placeholder="Email o una nota corta" aria-label="Email o nota" autocomplete="off" autocapitalize="off">
       <input type="tel" id="cf-tel" placeholder="Teléfono" aria-label="Teléfono">
       <span class="actions"><button class="btn light" type="submit">Añadir</button><button class="link" type="button" id="cf-cancel">Cancelar</button></span>
     </form>`}`;

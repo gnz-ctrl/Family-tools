@@ -628,3 +628,6 @@ details.past[open] > summary { margin-bottom: 8px; }
   #cal-add select { flex: 1 1 0; min-width: 0; width: auto; }
   #cal-add .btn { flex: none; padding: 6px 12px; }
 }
+
+.ci-note { font-size: .78rem; color: var(--muted); overflow-wrap: anywhere; }
+@media (min-width: 641px) { .ci-note { font-size: .8rem; } }
