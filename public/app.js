@@ -326,7 +326,9 @@ function renderTopic(slug) {
     !newM && !v.open.length ? `<span class="badge">Al día</span>` : "",
   ].join("");
   const empty = (txt) => `<p class="note-sim">${txt}</p>`;
-  const itemList = (rows) => rows.length ? `<ul class="kv-list">${rows.map((r) => `<li><span class="k">${esc(r.label)}</span><span class="v">${esc(r.value)}</span><button class="tdel" type="button" data-item-del="${r.id}" aria-label="Quitar" title="Quitar">×</button></li>`).join("")}</ul>` : "";
+  const itemList = (rows) => rows.length ? `<ul class="kv-list">${rows.map((r) => editingItem === r.id
+    ? `<li class="kv-edit"><form class="item-form" data-fact-form="${r.id}"><input type="text" name="label" value="${esc(r.label)}" aria-label="Dato"><input type="text" name="value" value="${esc(r.value)}" aria-label="Valor"><button class="btn light" type="submit">Guardar</button><button class="link" type="button" data-item-edit-cancel>Cancelar</button></form></li>`
+    : `<li><button type="button" class="k k-btn" data-item-edit="${r.id}" title="Editar">${esc(r.label)}</button><button type="button" class="v k-btn" data-item-edit="${r.id}" title="Editar">${esc(r.value)}</button><button class="tdel" type="button" data-item-del="${r.id}" aria-label="Quitar" title="Quitar">×</button></li>`).join("")}</ul>` : "";
   const itemForm = (kind, ph1, ph2) => `<form class="item-form" data-item-form="${kind}"><input type="text" name="label" placeholder="${ph1}" aria-label="${ph1}"><input type="text" name="value" placeholder="${ph2}" aria-label="${ph2}"><button class="btn light" type="submit">Añadir</button></form>`;
   const pendingEv = v.events.filter((e) => !personOf(e) && daysTo(e.date) >= 0).length; // sin decidir quién va ni invitación
 
@@ -386,6 +388,7 @@ function renderTopic(slug) {
 const KIDS = ["Valentina", "Paul", "Santiago"];
 const presetTo = {}; // email elegido desde Contactos para el próximo borrador
 let addingContact = null; // apartado en el que se está añadiendo un contacto
+let editingItem = null;   // contacto o dato clave que se está editando
 const cExtra = (c) => { try { return c.extra ? JSON.parse(c.extra) : {}; } catch { return {}; } };
 const isEmail = (x) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || "");
 function contactsBody(slug, contacts) {
@@ -397,7 +400,14 @@ function contactsBody(slug, contacts) {
     const looksTel = /^[+\d][\d\s/().-]{4,}$/.test(v);
     const tel = x.tel || (!mail && looksTel ? v : "");
     const note = !mail && v && v !== tel ? v : ""; // texto libre en lugar de email
-    return `<div class="ci"><div class="ci-top"><b>${esc(c.label)}</b><button class="tdel" type="button" data-item-del="${c.id}" aria-label="Quitar contacto" title="Quitar">×</button></div>
+    if (editingItem === c.id) return `<form class="ci-edit" data-contact-form="${c.id}">
+      <input type="text" name="label" value="${esc(c.label)}" placeholder="Quién" aria-label="Quién">
+      <input type="text" name="value" value="${esc(mail || note)}" placeholder="Email o una nota corta" aria-label="Email o nota" autocapitalize="off">
+      <input type="tel" name="tel" value="${esc(tel)}" placeholder="Teléfono" aria-label="Teléfono">
+      <select name="g" aria-label="Apartado">${groups.map((g) => `<option ${g === (x.g || "General") ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>
+      <span class="actions"><button class="btn light" type="submit">Guardar</button><button class="link" type="button" data-item-edit-cancel>Cancelar</button></span>
+    </form>`;
+    return `<div class="ci"><div class="ci-top"><button type="button" class="ci-name" data-item-edit="${c.id}" title="Editar contacto">${esc(c.label)}</button><button class="tdel" type="button" data-item-del="${c.id}" aria-label="Quitar contacto" title="Quitar">×</button></div>
       ${mail ? `<button type="button" class="ci-mail" data-mail-to="${esc(mail)}" title="Escribir un email a ${esc(mail)}">✉ ${esc(mail)}</button>` : ""}
       ${note ? `<span class="ci-note">${esc(note)}</span>` : ""}
       ${tel ? `<a class="ci-tel" href="tel:${esc(tel.replace(/[^\d+]/g, ""))}">☎ ${esc(tel)}</a>` : ""}</div>`;
@@ -741,6 +751,22 @@ function wireTopic(slug, v) {
     addingContact = b.dataset.addContact; uiOpen["contacts-" + slug] = true; renderTopic(slug); $("cf-name")?.focus();
   }));
   $("cf-cancel")?.addEventListener("click", () => { addingContact = null; renderTopic(slug); });
+  // editar contactos y datos clave
+  box.querySelectorAll("[data-item-edit]").forEach((b) => b.addEventListener("click", () => { editingItem = +b.dataset.itemEdit; addingContact = null; renderTopic(slug); box.querySelector("[data-contact-form] input, [data-fact-form] input")?.focus(); }));
+  box.querySelectorAll("[data-item-edit-cancel]").forEach((b) => b.addEventListener("click", () => { editingItem = null; renderTopic(slug); }));
+  box.querySelectorAll("[data-contact-form]").forEach((f) => f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const label = f.elements.label.value.trim(), val = f.elements.value.value.trim(), tel = f.elements.tel.value.trim();
+    if (!label) { say("Escribe quién es el contacto.", true); return; }
+    editingItem = null;
+    act(() => post(`/api/items/${f.dataset.contactForm}`, { label, value: val || tel, extra: JSON.stringify({ g: f.elements.g.value, tel }) }, "PATCH"), "Contacto actualizado.");
+  }));
+  box.querySelectorAll("[data-fact-form]").forEach((f) => f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const label = f.elements.label.value.trim(); if (!label) { say("Escribe el nombre del dato.", true); return; }
+    editingItem = null;
+    act(() => post(`/api/items/${f.dataset.factForm}`, { label, value: f.elements.value.value }, "PATCH"), "Dato actualizado.");
+  }));
   box.querySelectorAll("[data-mail-to]").forEach((b) => b.addEventListener("click", () => {
     presetTo[slug] = b.dataset.mailTo; uiOpen["mail-" + slug] = true; renderTopic(slug);
     $("composer")?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -831,7 +857,7 @@ function wireTopic(slug, v) {
    ========================================================= */
 function showTab(name) {
   if (name !== "tema") currentTopic = null;
-  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; invitingEv = editingEv = delEv = null; addingPanel = false; delPanel = null; addingContact = null;
+  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; invitingEv = editingEv = delEv = null; addingPanel = false; delPanel = null; addingContact = null; editingItem = null;
   $("tab-temas").hidden = name !== "temas";
   $("tab-tema").hidden = name !== "tema";
 }

@@ -631,3 +631,20 @@ details.past[open] > summary { margin-bottom: 8px; }
 
 .ci-note { font-size: .78rem; color: var(--muted); overflow-wrap: anywhere; }
 @media (min-width: 641px) { .ci-note { font-size: .8rem; } }
+
+/* Editar contactos y datos clave */
+.ci-name { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--fg); text-align: left; cursor: pointer; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ci-name:hover { color: var(--accent); text-decoration: underline; }
+.ci-edit { display: grid; gap: 4px; padding: 4px 0; grid-column: 2; }
+.cgroup > .ci-edit { grid-column: 1 / -1; }
+.ci-edit input, .ci-edit select { width: 100%; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--fg); font-size: .82rem; }
+.k-btn { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.k-btn.k { color: var(--muted); } .k-btn.v { color: var(--fg); font-weight: 500; }
+.k-btn:hover { color: var(--accent); }
+.kv-list li.kv-edit { display: block; }
+@media (min-width: 641px) { .ci-top .ci-name { white-space: nowrap; } }
+@media (max-width: 640px) {
+  .cgroup { grid-template-columns: 86px minmax(0, 1fr); }
+  .ci { display: grid; gap: 1px; }
+  .ci-mail, .ci-tel, .ci-name { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+}

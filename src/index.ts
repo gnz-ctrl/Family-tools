@@ -415,6 +415,20 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
       .bind(t.id, kind, label.trim(), value?.trim() || "", extra ? String(extra).slice(0, 500) : null).run();
     return json({ ok: true });
   }
+  // Editar un dato clave o un contacto
+  if ((mm = p.match(/^\/api\/items\/(\d+)$/)) && m === "PATCH") {
+    await guard(env, "topic_items", mm[1], me);
+    const b = await body<{ label?: string; value?: string; extra?: string }>();
+    if (b.label !== undefined && !b.label.trim()) throw new HttpError(400, "El nombre no puede quedar vacío");
+    const cur = await env.DB.prepare(`SELECT label, value, extra FROM topic_items WHERE id = ?`).bind(Number(mm[1])).first<{ label: string; value: string; extra: string | null }>();
+    await env.DB.prepare(`UPDATE topic_items SET label = ?, value = ?, extra = ? WHERE id = ?`).bind(
+      b.label !== undefined ? b.label.trim() : cur!.label,
+      b.value !== undefined ? b.value.trim() : cur!.value,
+      b.extra !== undefined ? String(b.extra).slice(0, 500) : cur!.extra,
+      Number(mm[1]),
+    ).run();
+    return json({ ok: true });
+  }
   if ((mm = p.match(/^\/api\/items\/(\d+)$/)) && m === "DELETE") {
     await guard(env, "topic_items", mm[1], me);
     await env.DB.prepare(`DELETE FROM topic_items WHERE id = ?`).bind(mm[1]).run();
