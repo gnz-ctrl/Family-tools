@@ -292,7 +292,7 @@ function renderAlerts() {
     items.push({ n: daysTo(t.due_date), id: t.topic_id, text: (daysTo(t.due_date) < 0 ? "Venció: " : "Plazo: ") + t.title }));
   S.mails.filter((m) => m.state === "new" && m.due && daysTo(m.due) <= 30).forEach((m) =>
     items.push({ n: daysTo(m.due), id: m.topic_id, text: m.todo || m.subject }));
-  S.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0 && daysTo(e.date) <= 30).forEach((e) =>
+  S.events.filter((e) => !personOf(e) && daysTo(e.date) >= 0 && daysTo(e.date) <= 30).forEach((e) =>
     items.push({ n: daysTo(e.date), id: e.topic_id, text: `${e.title}: falta decidir quién va` }));
   const fin = topicBySlug("finanzas");
   S.expenses.filter((e) => e.flag && e.next && daysTo(e.next) <= 30 && !S.mails.some((m) => m.state === "new" && m.from_name === e.name)).forEach((e) =>
@@ -328,7 +328,7 @@ function renderTopic(slug) {
   const empty = (txt) => `<p class="note-sim">${txt}</p>`;
   const itemList = (rows) => rows.length ? `<ul class="kv-list">${rows.map((r) => `<li><span class="k">${esc(r.label)}</span><span class="v">${esc(r.value)}</span><button class="tdel" type="button" data-item-del="${r.id}" aria-label="Quitar" title="Quitar">×</button></li>`).join("")}</ul>` : "";
   const itemForm = (kind, ph1, ph2) => `<form class="item-form" data-item-form="${kind}"><input type="text" name="label" placeholder="${ph1}" aria-label="${ph1}"><input type="text" name="value" placeholder="${ph2}" aria-label="${ph2}"><button class="btn light" type="submit">Añadir</button></form>`;
-  const pendingEv = v.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0).length;
+  const pendingEv = v.events.filter((e) => !personOf(e) && daysTo(e.date) >= 0).length; // sin decidir quién va ni invitación
 
   const head = editingTopic === slug
     ? `<form class="card edit-topic" id="edit-topic">
@@ -360,7 +360,7 @@ function renderTopic(slug) {
           ${pendingTaskDel === x.id ? `<button class="tdel on" type="button" data-task-del-ok="${x.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${x.id}" aria-label="Borrar tarea">×</button>`}</div>`).join("") : empty("No hay nada pendiente en este tema."))
         + `<form class="item-form" id="add-task"><input type="text" id="at-title" placeholder="Nueva tarea" aria-label="Nueva tarea"><input type="date" id="at-due" aria-label="Fecha límite"><button class="btn light" type="submit">Añadir</button></form>`, true)}
       ${mailsHTML(v.mails)}
-      ${fold("events-" + slug, foldTitle("Eventos", pendingEv ? `<span style="color:var(--warn)">${pendingEv} por decidir</span>` : v.events.length ? String(v.events.length) : ""), eventsBody(slug, v.events))}
+      ${fold("events-" + slug, foldTitle("Eventos", pendingEv ? `<span style="color:var(--warn)">${plural(pendingEv, "evento", "eventos")} sin decidir quién va</span>` : v.events.length ? String(v.events.length) : ""), eventsBody(slug, v.events))}
       ${slug === "finanzas" ? dashboardHTML() : ""}
       ${slug === "viajes" ? fold("trip", foldTitle("Planear un viaje"), `<div id="trip-slot"></div>`) : ""}
       ${fold("facts-" + slug, foldTitle("Datos clave"), itemList(v.facts) + itemForm("fact", "Dato (p. ej. Nº de cliente)", "Valor"))}
