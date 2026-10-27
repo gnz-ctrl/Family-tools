@@ -111,7 +111,7 @@ function taskEditForm(t, tag = "li") {
     <input type="date" name="due" value="${t.due_date || ""}" aria-label="Fecha límite">
     <select name="assignee" aria-label="Para quién">${who.map(([v, l]) => `<option value="${v}" ${t.assignee === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
     <textarea name="notes" rows="3" placeholder="Descripción: qué hay que hacer, referencias, con quién hablar…" aria-label="Descripción">${esc(t.notes || "")}</textarea>
-    <span class="actions"><button class="btn" type="submit" data-ask-on-save>Guardar y pedir ayuda</button><button class="btn light" type="submit">Guardar</button><button class="link" type="button" data-task-edit-cancel>Cerrar</button></span>
+    <span class="actions"><button class="btn light" type="submit">Guardar</button><button class="btn" type="submit" data-ask-on-save>Guardar y pedir ayuda</button><button class="link" type="button" data-task-edit-cancel>Cerrar</button></span>
   </form>${commentsHTML(t)}${assistHTML(t)}</${tag}>`;
 }
 const commentsOf = (id) => (S.comments || []).filter((c) => c.task_id === id);
@@ -977,7 +977,7 @@ $("quick").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("quick-text"), text = input.value.trim(); if (!text || !S) return;
   const t = findTopic(text);
-  if (t && /\b(mail|email|correo|escrib|redact)/i.test(text)) {
+  if (t && /^\s*(escr[ií]be|red[aá]cta|pr[eé]para)(me)?\b[^.]*\b(mail|email|e-mail|correo)\b/i.test(text)) {
     const lang = /ingl|english/i.test(text) ? "en" : /espa/i.test(text) ? "es" : /alem/i.test(text) ? "de" : undefined;
     input.value = ""; openTopic(t.slug, { scrollTo: "composer" });
     say(`Claude está escribiendo un borrador en ${t.name}…`);
