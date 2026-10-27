@@ -2,7 +2,7 @@ import PostalMime from "postal-mime";
 import { allowedSenders, getUser } from "./auth";
 import { analyzeMail, assistTask, classify, draftEmail, reviseEmail } from "./claude";
 import { ensureSchema, resetDemo } from "./db";
-import { buildIcs } from "./ics";
+import { buildIcs, buildInvite, type CalEvent } from "./ics";
 import type { Env, Topic, User } from "./types";
 
 const json = (data: unknown, status = 200) =>
@@ -87,6 +87,37 @@ async function apiCredit(env: Env) {
   return g.credit_eur == null ? { left: null, spent: spentEur } : { left: Number(g.credit_eur) - spentEur, spent: spentEur };
 }
 
+/* ---------- invitaciones de calendario por email ---------- */
+type EvRow = CalEvent & { topic_id: number | null; invited: string | null };
+const loadEvent = (env: Env, id: number) => env.DB.prepare(
+  `SELECT e.id, e.topic_id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, e.invited, e.seq, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.id = ?`,
+).bind(id).first<EvRow>();
+/** "g" → Gonzalo, "s" → Sabrina (por la inicial del nombre), "b" → los dos */
+function recipients(env: Env, who: string): User[] {
+  const u = users(env);
+  if (who === "b") return u;
+  return u.filter((x) => x.name.toLowerCase().startsWith(who));
+}
+const b64 = (s: string) => { const bytes = new TextEncoder().encode(s); let bin = ""; bytes.forEach((b) => (bin += String.fromCharCode(b))); return btoa(bin); };
+async function sendInvite(env: Env, ev: CalEvent, method: "REQUEST" | "CANCEL", to: User[], fromName: string, update = false) {
+  if (!to.length) return;
+  const from = env.MAIL_FROM || "calendario@sbkperez.me";
+  const ics = buildInvite(ev, method, { email: from, name: "Family Hub" }, to);
+  const fecha = new Date(ev.date + "T12:00:00Z").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+  const linea = `${ev.title} · ${fecha}${ev.time ? `, ${ev.time}` : ""}${ev.place ? ` · ${ev.place}` : ""}`;
+  const subject = method === "CANCEL" ? `Cancelado: ${ev.title}` : `${update ? "Cambio" : "Invitación"}: ${ev.title} (${fecha}${ev.time ? `, ${ev.time}` : ""})`;
+  const intro = method === "CANCEL" ? `${fromName} ha cancelado este evento:` : update ? `${fromName} ha cambiado este evento:` : `${fromName} te invita a:`;
+  const text = `${intro}\n\n${linea}${ev.note ? `\n${ev.note}` : ""}\n\n${method === "CANCEL" ? "Si ya estaba en tu calendario, se quitará al abrir este correo." : "Ábrelo en tu calendario o responde Sí / No desde la tarjeta del evento."}\n\n— Family Hub · sbkperez.me`;
+  const html = `<p>${esc(intro)}</p><p style="font-size:16px"><b>${esc(ev.title)}</b><br>${esc(fecha)}${ev.time ? `, ${esc(ev.time)}` : ""}${ev.place ? `<br>${esc(ev.place)}` : ""}${ev.note ? `<br><i>${esc(ev.note)}</i>` : ""}</p><p style="color:#5b6672">— Family Hub · <a href="https://sbkperez.me">sbkperez.me</a></p>`;
+  if (env.DEV_MODE === "true" || !env.EMAIL) { console.log(`[email simulado] ${subject} → ${to.map((u) => u.email).join(", ")}\n${ics}`); return; }
+  await env.EMAIL.send({
+    from, to: to.map((u) => u.email), subject, text, html,
+    attachments: [{ filename: method === "CANCEL" ? "cancelacion.ics" : "invitacion.ics", content: b64(ics), type: `text/calendar; charset=utf-8; method=${method}`, disposition: "attachment" }],
+  });
+}
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+const nameOf = (env: Env, email: string) => users(env).find((u) => u.email === email)?.name || email;
+
 /** Todo lo que necesita la web, en una sola llamada. */
 async function state(env: Env, me: string) {
   const [topics, items, history, tasks, mails, events, expenses, cal, files, panels, credit] = await Promise.all([
@@ -95,7 +126,7 @@ async function state(env: Env, me: string) {
     env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history WHERE ${VISIBLE} ORDER BY at DESC, id DESC`).bind(me).all(),
     env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by, ai FROM tasks WHERE ${VISIBLE} ORDER BY id`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, from_name, from_addr, subject, lang, received_at, intent, todo, due, state, forwarded_by FROM mails WHERE state != 'archived' AND ${VISIBLE} ORDER BY received_at DESC, id DESC`).bind(me).all(),
-    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
+    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar, invited, rsvp, seq FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, name, cat, amount, cycle, next, notice, sub, flag FROM expenses ORDER BY id`).all(),
     env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>(),
     env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
@@ -397,8 +428,52 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   }
   if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "DELETE") {
     await guard(env, "events", mm[1], me);
+    const ev = await loadEvent(env, Number(mm[1]));
+    const invited: string[] = ev?.invited ? JSON.parse(ev.invited) : [];
+    if (ev && invited.length) {
+      try { await sendInvite(env, { ...ev, seq: (ev.seq ?? 0) + 1 }, "CANCEL", users(env).filter((u) => invited.includes(u.email)), nameOf(env, me)); }
+      catch (e) { console.error("cancelación no enviada", e); }
+    }
     await env.DB.prepare(`DELETE FROM events WHERE id = ?`).bind(mm[1]).run();
-    return json({ ok: true });
+    return json({ ok: true, cancelled: invited.length });
+  }
+  // Editar un evento; si ya había invitados, les llega el cambio
+  if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "PATCH") {
+    await guard(env, "events", mm[1], me);
+    const b = await body<{ title?: string; date?: string; time?: string; place?: string; note?: string }>();
+    if (b.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(b.date)) throw new HttpError(400, "Fecha no válida");
+    const old = await loadEvent(env, Number(mm[1]));
+    if (!old) throw new HttpError(404, "Ese evento ya no existe");
+    const nv = {
+      title: b.title?.trim() || old.title, date: b.date || old.date,
+      time: b.time !== undefined ? b.time.trim() || null : old.time, place: b.place !== undefined ? b.place.trim() || null : old.place,
+      note: b.note !== undefined ? b.note.trim() || null : old.note,
+    };
+    await env.DB.prepare(`UPDATE events SET title = ?, date = ?, time = ?, place = ?, note = ?, seq = seq + 1 WHERE id = ?`)
+      .bind(nv.title, nv.date, nv.time, nv.place, nv.note, old.id).run();
+    const invited: string[] = old.invited ? JSON.parse(old.invited) : [];
+    if (invited.length) await sendInvite(env, { ...old, ...nv, seq: (old.seq ?? 0) + 1 }, "REQUEST", users(env).filter((u) => invited.includes(u.email)), nameOf(env, me), true);
+    return json({ ok: true, updated: invited.length });
+  }
+  // Invitar por email a Gonzalo, Sabrina o los dos
+  if ((mm = p.match(/^\/api\/events\/(\d+)\/invite$/)) && m === "POST") {
+    await guard(env, "events", mm[1], me);
+    const { who } = await body<{ who?: string }>();
+    const to = recipients(env, who || "b");
+    if (!to.length) throw new HttpError(400, "Elige a quién invitar");
+    const ev = await loadEvent(env, Number(mm[1]));
+    if (!ev) throw new HttpError(404, "Ese evento ya no existe");
+    const before: string[] = ev.invited ? JSON.parse(ev.invited) : [];
+    try { await sendInvite(env, ev, "REQUEST", to, nameOf(env, me), before.some((e) => to.some((u) => u.email === e))); }
+    catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/RECIPIENT|destination|verified/i.test(msg)) throw new HttpError(400, "Cloudflare no deja enviar a esa dirección: verifica las dos direcciones en Email Routing → Destination addresses.");
+      throw e;
+    }
+    const all = [...new Set([...before, ...to.map((u) => u.email)])];
+    await env.DB.prepare(`UPDATE events SET invited = ? WHERE id = ?`).bind(JSON.stringify(all), ev.id).run();
+    if (ev.topic_id) await addHistory(env, ev.topic_id, `Invitación enviada a ${to.map((u) => u.name).join(" y ")}: ${ev.title} (${ev.date})`);
+    return json({ ok: true, to: to.map((u) => u.name) });
   }
   if (p === "/api/tasks" && m === "POST") {
     const b = await body<{ title?: string; topic?: string; due_date?: string | null; assignee?: string }>();
@@ -561,6 +636,23 @@ export default {
     await ensureSchema(env);
     const text = parsed.text || parsed.html?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ") || "";
     const to = message.to.toLowerCase();
+    // Respuestas Sí / No a las invitaciones (llegan a calendario@)
+    if (to.startsWith("calendario@")) {
+      const cal = (parsed.attachments || []).map((a) => typeof a.content === "string" ? a.content : new TextDecoder().decode(a.content as ArrayBuffer)).find((c) => c.includes("BEGIN:VCALENDAR"))
+        || (text.includes("BEGIN:VCALENDAR") ? text : "");
+      const unfolded = cal.replace(/\r?\n[ \t]/g, "");
+      const id = unfolded.match(/UID:event-(\d+)@/)?.[1];
+      const st = unfolded.match(/ATTENDEE[^\n]*PARTSTAT=([A-Z-]+)[^\n]*mailto:([^\s\r\n]+)/i);
+      if (id && st) {
+        const ev = await env.DB.prepare(`SELECT rsvp FROM events WHERE id = ?`).bind(Number(id)).first<{ rsvp: string | null }>();
+        if (ev) {
+          const r = ev.rsvp ? JSON.parse(ev.rsvp) : {};
+          r[st[2].toLowerCase()] = st[1].toUpperCase();
+          await env.DB.prepare(`UPDATE events SET rsvp = ? WHERE id = ?`).bind(JSON.stringify(r), Number(id)).run();
+        }
+      }
+      return;
+    }
     if (to.startsWith("inbox@")) await ingestMail(env, { subject: parsed.subject || "", text, forwardedBy: sender });
     else await ingest(env, { text, sender, source: "email", subject: parsed.subject });
   },

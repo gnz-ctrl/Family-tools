@@ -212,22 +212,59 @@ function renderAll() {
 }
 
 /* ---------- calendario ---------- */
+let calMonth = null, calDay = null;
+const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 function renderCalendar() {
-  const evs = S.events.filter((e) => e.in_calendar && daysTo(e.date) >= 0).sort((a, b) => (a.date < b.date ? -1 : 1));
-  const pending = S.events.filter((e) => !e.in_calendar && daysTo(e.date) >= 0).length;
-  $("cal-count").textContent = evs.length;
+  const today = isoOf(new Date());
+  calMonth ||= today.slice(0, 7); calDay ||= today;
+  const [y, m] = calMonth.split("-").map(Number);
+  const first = new Date(y, m - 1, 1), start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
   const byDay = {};
-  evs.forEach((e) => (byDay[e.date] ||= []).push(e));
+  S.events.forEach((e) => (byDay[e.date] ||= []).push(e));
+  const dueByDay = {};
+  S.tasks.filter((t) => t.status === "open" && t.due_date).forEach((t) => (dueByDay[t.due_date] ||= []).push(t));
+  const upcoming = S.events.filter((e) => daysTo(e.date) >= 0 && daysTo(e.date) <= 30).length;
+  $("cal-count").textContent = upcoming || "";
+  const cells = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const k = isoOf(d), evs = byDay[k] || [];
+    if (i >= 35 && d.getMonth() !== m - 1) break;
+    cells.push(`<button type="button" class="cal-cell ${d.getMonth() !== m - 1 ? "other" : ""} ${k === today ? "today" : ""} ${k === calDay ? "sel" : ""}" data-cal-day="${k}" aria-label="${d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}${evs.length ? `, ${plural(evs.length, "evento", "eventos")}` : ""}">
+      <span class="dn">${d.getDate()}${dueByDay[k] ? `<i class="due-dot" title="Plazo de tarea"></i>` : ""}</span>
+      ${evs.slice(0, 3).map((e) => `<span class="evbar p-${personOf(e) || "x"}">${esc(e.title)}</span>`).join("")}${evs.length > 3 ? `<span class="more">+${evs.length - 3}</span>` : ""}
+    </button>`);
+  }
+  const dayEvs = (byDay[calDay] || []).sort((a, b) => ((a.time || "") < (b.time || "") ? -1 : 1));
+  const dayTasks = dueByDay[calDay] || [];
+  const topics = S.topics.filter((t) => t.slug !== "documentos");
   const url = S.calPath ? location.origin + S.calPath : "";
-  $("cal-body").innerHTML = `<div class="card" style="gap:4px">
-    ${Object.keys(byDay).map((d) => `<div class="cal-day"><time>${esc(fmt(d))}<br><small>${D(d).toLocaleDateString("es-ES", { weekday: "short" })}</small></time><div>
-      ${byDay[d].map((e) => `<div class="ev"><b>${esc(e.title)}</b><small>${esc([e.time, e.place, ATTEND_TXT[e.attendee] && cap(ATTEND_TXT[e.attendee])].filter(Boolean).join(" · "))}</small></div>`).join("")}
-    </div></div>`).join("") || `<p class="note-sim">Todavía no hay nada en el calendario. Los eventos se añaden desde cada tema (por ejemplo, en Colegios).</p>`}
-    ${pending ? `<p class="note-sim" style="margin-top:8px">${plural(pending, "evento", "eventos")} esperando a que decidáis quién va.</p>` : ""}
-    ${url ? `<div class="cal-sub"><span><b style="color:var(--fg)">Verlo en el calendario del móvil:</b> suscríbete a esta dirección (Google Calendar → Otros calendarios → Desde URL; en iPhone: Ajustes → Calendario → Cuentas → Añadir calendario suscrito).</span>
-      <code id="cal-url">${esc(url)}</code><div class="actions"><button class="btn light" type="button" id="cal-copy">Copiar dirección</button></div></div>` : ""}
+  $("cal-body").innerHTML = `<div class="cal card">
+    <div class="cal-nav"><button class="icon-btn" type="button" data-cal-nav="-1" aria-label="Mes anterior">‹</button>
+      <b>${cap(first.toLocaleDateString("es-ES", { month: "long" }))} ${y}</b>
+      <button class="icon-btn" type="button" data-cal-nav="1" aria-label="Mes siguiente">›</button>
+      <button class="link" type="button" data-cal-today>Hoy</button></div>
+    <div class="cal-legend"><span><i class="pchip p-g"></i>${esc(S.users[0]?.name || "Gonzalo")}</span><span><i class="pchip p-s"></i>${esc(S.users[1]?.name || "Sabrina")}</span><span><i class="pchip p-b"></i>Los dos</span><span><i class="pchip p-x"></i>Sin decidir</span></div>
+    <div class="cal-grid">${["L", "M", "X", "J", "V", "S", "D"].map((d) => `<span class="cal-wd">${d}</span>`).join("")}${cells.join("")}</div>
+    <div class="cal-dayview">
+      <h4>${esc(cap(D(calDay).toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })))}</h4>
+      ${dayEvs.map((e) => eventCard(e, { noDate: true, showTopic: true })).join("") || `<p class="note-sim">Sin eventos este día.</p>`}
+      ${dayTasks.length ? `<div class="cal-tasks">Plazos: ${dayTasks.map((t) => `<button class="link-plain" type="button" data-task-edit="${t.id}" data-open-ov>${esc(t.title)}</button>`).join(" · ")}</div>` : ""}
+      <form class="ev-form" id="cal-add">
+        <input type="text" id="ca-title" placeholder="Nuevo evento este día" aria-label="Nuevo evento">
+        <input type="text" id="ca-time" placeholder="Hora" aria-label="Hora">
+        <select id="ca-topic" aria-label="Tema">${topics.map((t) => `<option value="${t.slug}" ${t.slug === "eventos" ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
+        <button class="btn light" type="submit">Añadir</button>
+      </form>
+    </div>
+    ${url ? `<details class="past"><summary>Ver este calendario en el móvil (suscripción)</summary><div class="cal-sub"><span>Google Calendar → Otros calendarios → Desde URL; en iPhone: Ajustes → Calendario → Cuentas → Añadir calendario suscrito. Solo incluye los eventos marcados para el calendario compartido.</span>
+      <code id="cal-url">${esc(url)}</code><div class="actions"><button class="btn light" type="button" id="cal-copy">Copiar dirección</button></div></div></details>` : ""}
   </div>`;
   $("cal-copy")?.addEventListener("click", (e) => copyText(url, e.target, "Dirección copiada"));
+  $("cal-add").addEventListener("submit", (e) => {
+    e.preventDefault(); const title = $("ca-title").value.trim(); if (!title) return;
+    act(() => post(`/api/topics/${$("ca-topic").value}/events`, { title, date: calDay, time: $("ca-time").value }), "Evento añadido. Elige quién va o envía la invitación.");
+  });
 }
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -446,17 +483,49 @@ function mailsHTML(mails) {
 }
 
 /* ---------- eventos ---------- */
+let invitingEv = null, editingEv = null, delEv = null;
+const parseJ = (x, d) => { try { return x ? JSON.parse(x) : d; } catch { return d; } };
+/** Quién va: "g", "s", "b" o "" (sin decidir), según «¿Quién va?» o, si no, a quién se invitó */
+function personOf(ev) {
+  if (["g", "s", "b"].includes(ev.attendee)) return ev.attendee;
+  const inv = parseJ(ev.invited, []);
+  if (inv.length >= 2) return "b";
+  if (inv.length === 1) return (S.users.find((u) => u.email === inv[0])?.name || "x")[0].toLowerCase();
+  return "";
+}
+const RSVP = { ACCEPTED: "aceptó", DECLINED: "no va", TENTATIVE: "quizás" };
+function eventCard(ev, opts = {}) {
+  const p = personOf(ev), inv = parseJ(ev.invited, []), rsvp = parseJ(ev.rsvp, {});
+  const topic = topicById(ev.topic_id);
+  const invLine = inv.length ? `<div class="ev-inv">✉ Invitación enviada a ${inv.map((e) => `${esc(userName(e))}${rsvp[e] ? ` (${RSVP[rsvp[e]] || rsvp[e].toLowerCase()})` : ""}`).join(" · ")}</div>` : "";
+  if (editingEv === ev.id) return `<div class="ev-card p-${p || "x"}"><form class="ev-edit" data-ev-form="${ev.id}">
+      <input type="text" name="title" value="${esc(ev.title)}" aria-label="Evento">
+      <input type="date" name="date" value="${ev.date}" aria-label="Fecha">
+      <input type="text" name="time" value="${esc(ev.time || "")}" placeholder="Hora (19:00 o 19:00–20:30)" aria-label="Hora">
+      <input type="text" name="place" value="${esc(ev.place || "")}" placeholder="Lugar" aria-label="Lugar">
+      <span class="actions"><button class="btn" type="submit">Guardar${inv.length ? " y avisar" : ""}</button><button class="link" type="button" data-ev-edit-cancel>Cancelar</button></span>
+    </form></div>`;
+  const def = ["g", "s", "b"].includes(ev.attendee) ? ev.attendee : "b";
+  return `<div class="ev-card p-${p || "x"}">
+    <div class="ev-head"><span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b></div>
+    <div class="ev-sub">${opts.noDate ? "" : esc(fmtLong(ev.date)) + (ev.time ? " · " : "")}${ev.time ? esc(ev.time) : ""}${ev.place ? ` · ${esc(ev.place)}` : ""}${ev.who ? ` · ${esc(ev.who)}` : ""}${opts.showTopic && topic ? ` · <button class="link-plain" type="button" data-topic-open="${topic.slug}">${esc(topic.name)}</button>` : ""}</div>
+    ${ev.note ? `<div class="ev-note">${esc(ev.note)}</div>` : ""}
+    ${invLine}
+    ${invitingEv === ev.id
+      ? `<div class="ev-row"><span class="note-sim">Enviar invitación a:</span>${["g", "s", "b"].map((k) => `<button class="btn ${k === def ? "" : "light"}" type="button" data-ev-invite-to="${ev.id}" data-who="${k}">${{ g: S.users[0]?.name || "Gonzalo", s: S.users[1]?.name || "Sabrina", b: "Los dos" }[k]}</button>`).join("")}<button class="link" type="button" data-ev-invite-cancel>Cancelar</button></div>`
+      : `<div class="ev-row">
+          <select data-ev-att="${ev.id}" aria-label="¿Quién va?">${Object.entries(ATTEND).map(([k, l]) => `<option value="${k}" ${(ev.attendee || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <button class="btn light" type="button" data-ev-invite="${ev.id}">✉ Invitar</button>
+          <button class="link" type="button" data-ev-edit="${ev.id}">Editar</button>
+          ${delEv === ev.id ? `<button class="link danger" type="button" data-ev-del-ok="${ev.id}">${inv.length ? "Borrar y cancelar invitación" : "Sí, borrar"}</button>` : `<button class="link danger" type="button" data-ev-del="${ev.id}">Borrar</button>`}
+        </div>`}
+  </div>`;
+}
 function eventsBody(slug, events) {
   const evs = [...events].sort((a, b) => (a.date < b.date ? -1 : 1));
-  return `<div id="events" style="display:grid;gap:12px">${evs.length ? `<div class="cards">${evs.map((ev) => `<div class="card" style="background:var(--bg)">
-      <div class="card-top"><div class="avatar">${D(ev.date).getDate()}</div>${ev.in_calendar ? `<span class="badge">En el calendario</span>` : dueBadge(ev.date)}</div>
-      <h3>${esc(ev.title)}</h3>
-      <p>${esc(fmtLong(ev.date))}${ev.time ? ` · ${esc(ev.time)}` : ""}${ev.who || ev.place ? `<br>${esc([ev.who, ev.place].filter(Boolean).join(" · "))}` : ""}${ev.note ? `<br><b style="color:var(--fg)">${esc(ev.note)}</b>` : ""}</p>
-      ${ev.in_calendar
-        ? `<span class="note-ok">✓ En el calendario${ev.attendee ? ` · ${ATTEND_TXT[ev.attendee]}` : ""}</span><span class="actions"><button class="link" type="button" data-ev-undo="${ev.id}">Quitar del calendario</button><button class="link danger" type="button" data-ev-del="${ev.id}">Borrar</button></span>`
-        : `<label for="att-${ev.id}">¿Quién va?<select id="att-${ev.id}" data-ev-att="${ev.id}">${Object.entries(ATTEND).map(([k, l]) => `<option value="${k}" ${(ev.attendee || "") === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-           <span class="actions"><button class="btn" type="button" data-ev-send="${ev.id}" ${ev.attendee ? "" : "disabled"}>Añadir al calendario</button><button class="link danger" type="button" data-ev-del="${ev.id}">Borrar</button></span>`}
-    </div>`).join("")}</div>` : `<p class="note-sim">Sin eventos. Llegan solos de los correos reenviados a inbox@, o añádelos aquí.</p>`}
+  const past = evs.filter((e) => daysTo(e.date) < 0), next = evs.filter((e) => daysTo(e.date) >= 0);
+  return `<div style="display:grid;gap:8px">${next.map((e) => eventCard(e)).join("") || `<p class="note-sim">Sin eventos próximos. Llegan solos de los correos reenviados a inbox@, o añádelos aquí.</p>`}
+    ${past.length ? `<details class="past"><summary>${plural(past.length, "evento pasado", "eventos pasados")}</summary>${past.reverse().map((e) => eventCard(e)).join("")}</details>` : ""}
     <form class="ev-form" id="add-event">
       <input type="text" id="ae-title" placeholder="Evento (p. ej. Cumpleaños de la abuela)" aria-label="Evento">
       <input type="date" id="ae-date" aria-label="Fecha">
@@ -680,18 +749,6 @@ function wireTopic(slug, v) {
   }));
 
   // eventos
-  $("events")?.addEventListener("change", (e) => {
-    const id = e.target.dataset.evAtt; if (!id) return;
-    act(() => post(`/api/events/${id}`, { attendee: e.target.value }));
-  });
-  $("events")?.addEventListener("click", (e) => {
-    const s = e.target.closest("[data-ev-send]"), u = e.target.closest("[data-ev-undo]");
-    if (s) act(() => post(`/api/events/${s.dataset.evSend}`, { in_calendar: true }), "Añadido al calendario de los dos.");
-    if (u) act(() => post(`/api/events/${u.dataset.evUndo}`, { in_calendar: false }), "Quitado del calendario.");
-    const d = e.target.closest("[data-ev-del]");
-    if (d) act(() => post(`/api/events/${d.dataset.evDel}`, {}, "DELETE"), "Evento borrado.");
-  });
-
   // suscripciones
   $("sub-form")?.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -744,7 +801,7 @@ function wireTopic(slug, v) {
    ========================================================= */
 function showTab(name) {
   if (name !== "tema") currentTopic = null;
-  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; addingPanel = false; delPanel = null; addingContact = null;
+  editingTopic = deletingTopic = sharingTopic = null; editingTask = null; invitingEv = editingEv = delEv = null; addingPanel = false; delPanel = null; addingContact = null;
   $("tab-temas").hidden = name !== "temas";
   $("tab-tema").hidden = name !== "tema";
 }
@@ -757,6 +814,40 @@ document.addEventListener("click", (e) => {
   if (b && (b.closest("#groups") || b.closest("#alert-list"))) openTopic(b.dataset.topic);
 });
 $("back-topics").addEventListener("click", () => { showTab("temas"); renderAll(); window.scrollTo({ top: 0 }); });
+/* ---------- eventos y calendario: acciones (portada y temas) ---------- */
+document.addEventListener("click", (e) => {
+  const t = e.target, q = (sel) => t.closest(sel);
+  let b;
+  if ((b = q("[data-cal-nav]"))) { const [y, m] = calMonth.split("-").map(Number); const d = new Date(y, m - 1 + +b.dataset.calNav, 1); calMonth = isoOf(d).slice(0, 7); return renderCalendar(); }
+  if (q("[data-cal-today]")) { calMonth = null; calDay = null; return renderCalendar(); }
+  if ((b = q("[data-cal-day]"))) { calDay = b.dataset.calDay; if (calDay.slice(0, 7) !== calMonth) calMonth = calDay.slice(0, 7); return renderCalendar(); }
+  if ((b = q("[data-topic-open]"))) return openTopic(b.dataset.topicOpen);
+  if ((b = q("[data-ev-invite]"))) { invitingEv = +b.dataset.evInvite; editingEv = delEv = null; return renderAll(); }
+  if (q("[data-ev-invite-cancel]")) { invitingEv = null; return renderAll(); }
+  if ((b = q("[data-ev-invite-to]"))) {
+    const id = +b.dataset.evInviteTo; invitingEv = null; b.disabled = true;
+    return act(() => post(`/api/events/${id}/invite`, { who: b.dataset.who }), (r) => `Invitación enviada a ${r.to.join(" y ")}. Le llegará por email para añadirla a su calendario.`).catch(() => {});
+  }
+  if ((b = q("[data-ev-edit]"))) { editingEv = +b.dataset.evEdit; invitingEv = delEv = null; return renderAll(); }
+  if (q("[data-ev-edit-cancel]")) { editingEv = null; return renderAll(); }
+  if ((b = q("[data-ev-del]"))) { delEv = +b.dataset.evDel; return renderAll(); }
+  if ((b = q("[data-ev-del-ok]"))) { delEv = null; return act(() => post(`/api/events/${b.dataset.evDelOk}`, {}, "DELETE"), (r) => r.cancelled ? "Evento borrado y cancelación enviada." : "Evento borrado.").catch(() => {}); }
+  if ((b = q("[data-ev-send]"))) return act(() => post(`/api/events/${b.dataset.evSend}`, { in_calendar: true }), "Añadido al calendario compartido.");
+  if ((b = q("[data-ev-undo]"))) return act(() => post(`/api/events/${b.dataset.evUndo}`, { in_calendar: false }), "Quitado del calendario compartido.");
+  if ((b = q("[data-open-ov]"))) { $("overview").open = true; }
+});
+document.addEventListener("change", (e) => {
+  const id = e.target.dataset?.evAtt; if (!id) return;
+  // «quién va» también decide si entra en el calendario compartido (.ics)
+  const v = e.target.value;
+  act(() => post(`/api/events/${id}`, { attendee: v, in_calendar: v === "g" || v === "s" || v === "b" }));
+});
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-ev-form]"); if (!f) return;
+  e.preventDefault(); const id = f.dataset.evForm; editingEv = null;
+  act(() => post(`/api/events/${id}`, { title: f.elements.title.value, date: f.elements.date.value, time: f.elements.time.value, place: f.elements.place.value }, "PATCH"),
+    (r) => r.updated ? "Evento cambiado y aviso enviado a los invitados." : "Evento cambiado.").catch(() => {});
+});
 document.addEventListener("click", (e) => {
   const ed = e.target.closest("[data-task-edit]");
   if (ed) { editingTask = +ed.dataset.taskEdit; pendingTaskDel = null; renderAll(); return; }

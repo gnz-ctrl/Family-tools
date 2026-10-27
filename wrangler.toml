@@ -32,6 +32,9 @@ ACCESS_TEAM = "sbkperez"
 # AUD tag de la aplicación de Access (Zero Trust → Access → Applications)
 ACCESS_AUD = "7da86e38c5ebeadfd4b00fe8480324814d4cd7a06c055d319576ca987c9ae16c"
 
+# Desde aquí salen las invitaciones de calendario (dominio con Email Routing activo)
+MAIL_FROM = "calendario@sbkperez.me"
+
 # Secretos (no van aquí): wrangler secret put ANTHROPIC_API_KEY
 
 # Tarea programada semanal (de momento solo aplica migraciones pendientes)
@@ -41,3 +44,7 @@ crons = ["0 7 * * SUN"]
 # Registros visibles en Cloudflare → family-tools → Logs
 [observability]
 enabled = true
+
+# Envío de emails (invitaciones). En el plan gratuito solo a direcciones verificadas en Email Routing.
+[[send_email]]
+name = "EMAIL"

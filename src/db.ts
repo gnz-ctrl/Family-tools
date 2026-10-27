@@ -68,6 +68,12 @@ const MIGRATIONS: string[][] = [
     `CREATE TABLE IF NOT EXISTS topic_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, topic_id INTEGER NOT NULL REFERENCES topics(id), title TEXT NOT NULL, body TEXT, sort INTEGER NOT NULL DEFAULT 0)`,
     `INSERT OR IGNORE INTO settings (k, v) VALUES ('api_spent_usd', '0')`,
   ],
+  // 9 · invitaciones de calendario por email: a quién se invitó, versión y respuestas
+  [
+    `ALTER TABLE events ADD COLUMN invited TEXT`,
+    `ALTER TABLE events ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE events ADD COLUMN rsvp TEXT`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;
