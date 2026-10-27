@@ -200,12 +200,12 @@ function renderAll() {
     if (t.slug === "documentos") {
       const nf = (S.files || []).length;
       return `<button type="button" class="card topic" data-topic="${t.slug}"${cattr}>
-      <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start"><span class="badge mute">${nf ? plural(nf, "archivo", "archivos") : "Vacío"}</span></div></button>`;
+      <h3 style="margin:0">${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${nf ? `<span class="badge mute">${plural(nf, "archivo", "archivos")}</span>` : ""}</div></button>`;
     }
     const badges = [
       m ? `<span class="badge info">${plural(m, "correo", "correos")}</span>` : "",
       n ? `<span class="badge warn">${plural(n, "pendiente", "pendientes")}</span>` : "",
-      !m && !n ? (t.status_summary ? `<span class="badge">Al día</span>` : `<span class="badge mute">Sin novedades</span>`) : "",
+      !m && !n && t.status_summary ? `<span class="badge">Al día</span>` : "",
     ].join("");
     return `<button type="button" class="card topic" data-topic="${t.slug}"${cattr}>
       <h3 style="margin:0">${t.private_to ? `<span class="lock" title="Solo lo ves tú">${lock}</span>` : ""}${esc(t.name)}</h3><div class="badges" style="justify-content:flex-start">${badges}</div></button>`;
@@ -510,9 +510,18 @@ function personOf(ev) {
   return "";
 }
 const RSVP = { ACCEPTED: "aceptó", DECLINED: "no va", TENTATIVE: "quizás" };
+const openEv = new Set(); // eventos ya invitados que se han desplegado a mano
 function eventCard(ev, opts = {}) {
   const p = personOf(ev), inv = parseJ(ev.invited, []), rsvp = parseJ(ev.rsvp, {});
   const topic = topicById(ev.topic_id);
+  // Con la invitación enviada, el evento queda plegado en una línea (el color ya dice para quién es)
+  if (inv.length && !openEv.has(ev.id) && invitingEv !== ev.id && editingEv !== ev.id && delEv !== ev.id) {
+    const answers = inv.map((e) => rsvp[e]).filter(Boolean);
+    return `<button type="button" class="ev-mini p-${p || "x"}" data-ev-expand="${ev.id}" title="Mostrar detalles">
+      <span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b>
+      <span class="ev-mini-when">${opts.noDate ? "" : esc(fmt(ev.date)) + (ev.time ? " · " : "")}${ev.time ? esc(ev.time) : ""}</span>
+      <span class="ev-mini-st">✉${answers.includes("ACCEPTED") ? " ✓" : answers.includes("DECLINED") ? " ✗" : ""}</span><span class="chev" aria-hidden="true">▾</span></button>`;
+  }
   const invLine = inv.length ? `<div class="ev-inv">✉ Invitación enviada a ${inv.map((e) => `${esc(userName(e))}${rsvp[e] ? ` (${RSVP[rsvp[e]] || rsvp[e].toLowerCase()})` : ""}`).join(" · ")}</div>` : "";
   if (editingEv === ev.id) return `<div class="ev-card p-${p || "x"}"><form class="ev-edit" data-ev-form="${ev.id}">
       <input type="text" name="title" value="${esc(ev.title)}" aria-label="Evento">
@@ -523,7 +532,7 @@ function eventCard(ev, opts = {}) {
     </form></div>`;
   const def = ["g", "s", "b"].includes(ev.attendee) ? ev.attendee : "b";
   return `<div class="ev-card p-${p || "x"}">
-    <div class="ev-head"><span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b></div>
+    <div class="ev-head"><span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b>${inv.length ? `<button type="button" class="ev-fold" data-ev-collapse="${ev.id}" aria-label="Plegar" title="Plegar">▴</button>` : ""}</div>
     <div class="ev-sub">${opts.noDate ? "" : esc(fmtLong(ev.date)) + (ev.time ? " · " : "")}${ev.time ? esc(ev.time) : ""}${ev.place ? ` · ${esc(ev.place)}` : ""}${ev.who ? ` · ${esc(ev.who)}` : ""}${opts.showTopic && topic ? ` · <button class="link-plain" type="button" data-topic-open="${topic.slug}">${esc(topic.name)}</button>` : ""}</div>
     ${ev.note ? `<div class="ev-note">${esc(ev.note)}</div>` : ""}
     ${invLine}
@@ -838,10 +847,12 @@ document.addEventListener("click", (e) => {
   if (q("[data-cal-today]")) { calMonth = null; calDay = null; return renderCalendar(); }
   if ((b = q("[data-cal-day]"))) { calDay = b.dataset.calDay; if (calDay.slice(0, 7) !== calMonth) calMonth = calDay.slice(0, 7); return renderCalendar(); }
   if ((b = q("[data-topic-open]"))) return openTopic(b.dataset.topicOpen);
+  if ((b = q("[data-ev-expand]"))) { openEv.add(+b.dataset.evExpand); return renderAll(); }
+  if ((b = q("[data-ev-collapse]"))) { openEv.delete(+b.dataset.evCollapse); return renderAll(); }
   if ((b = q("[data-ev-invite]"))) { invitingEv = +b.dataset.evInvite; editingEv = delEv = null; return renderAll(); }
   if (q("[data-ev-invite-cancel]")) { invitingEv = null; return renderAll(); }
   if ((b = q("[data-ev-invite-to]"))) {
-    const id = +b.dataset.evInviteTo; invitingEv = null; b.disabled = true;
+    const id = +b.dataset.evInviteTo; invitingEv = null; openEv.delete(id); b.disabled = true;
     return act(() => post(`/api/events/${id}/invite`, { who: b.dataset.who }), (r) => `Invitación enviada a ${r.to.join(" y ")}. Le llegará por email para añadirla a su calendario.`).catch(() => {});
   }
   if ((b = q("[data-ev-edit]"))) { editingEv = +b.dataset.evEdit; invitingEv = delEv = null; return renderAll(); }

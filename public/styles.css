@@ -603,3 +603,28 @@ details.past[open] > summary { margin-bottom: 8px; }
   .ev-row .btn { white-space: normal; }
   .ev-row .link.danger { white-space: normal; text-align: left; }
 }
+
+/* Evento ya invitado: una sola línea plegada */
+.ev-mini { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-left: 4px solid var(--p-x); border-radius: 10px; background: var(--card); text-align: left; font-size: .88rem; min-width: 0; }
+.ev-mini.p-g { border-left-color: var(--p-g); } .ev-mini.p-s { border-left-color: var(--p-s); }
+.ev-mini.p-b { border-left-color: var(--p-g); box-shadow: inset 4px 0 0 var(--p-s); }
+.ev-mini b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev-mini-when { color: var(--muted); font-size: .8rem; white-space: nowrap; }
+.ev-mini-st { margin-left: auto; color: var(--accent); font-size: .8rem; white-space: nowrap; }
+.ev-mini .chev { color: var(--faint); }
+.ev-fold { margin-left: auto; color: var(--faint); width: 24px; height: 24px; border-radius: 999px; }
+.ev-fold:hover { background: var(--bg); color: var(--fg); }
+
+/* Contactos en el ordenador: 2 columnas y todo en una línea, mismo tamaño de letra */
+@media (min-width: 641px) {
+  .cgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cgroup, .ci-top b, .ci-mail, .ci-tel { font-size: .8rem; }
+  .ci-mail, .ci-tel { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .ci-top b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+@media (max-width: 640px) {
+  #cal-add #ca-title { flex: 1 1 100%; }
+  #cal-add #ca-time { flex: 0 0 76px; }
+  #cal-add select { flex: 1 1 0; min-width: 0; width: auto; }
+  #cal-add .btn { flex: none; padding: 6px 12px; }
+}
