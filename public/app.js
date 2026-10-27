@@ -1112,6 +1112,72 @@ $("booked").addEventListener("click", async () => {
   goStep(4);
 });
 
+/* ---------- reordenar los temas: mantener pulsado y arrastrar (como los iconos del móvil) ---------- */
+(() => {
+  let press = null, drag = null, suppressClick = false;
+  const grid = () => $("groups").querySelector(".topics-grid");
+  const cardAt = (x, y) => document.elementFromPoint(x, y)?.closest(".topics-grid > .card.topic[data-topic]:not(.dragging)");
+
+  function start(card, x, y, touch = false) {
+    const r = card.getBoundingClientRect();
+    const ph = document.createElement("div");
+    ph.className = "card topic placeholder"; ph.style.height = r.height + "px";
+    card.before(ph);
+    Object.assign(card.style, { position: "fixed", left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px", zIndex: 60 });
+    card.classList.add("dragging"); grid().classList.add("reordering");
+    drag = { card, ph, dx: x - r.left, dy: y - r.top, before: order(), touch };
+    navigator.vibrate?.(12);
+  }
+  function move(x, y) {
+    const { card, ph, dx, dy } = drag;
+    card.style.left = x - dx + "px"; card.style.top = y - dy + "px";
+    const over = cardAt(x, y);
+    if (over && over !== ph) {
+      const after = ph.compareDocumentPosition(over) & Node.DOCUMENT_POSITION_FOLLOWING;
+      after ? over.after(ph) : over.before(ph);
+    }
+    if (y < 70) window.scrollBy(0, -12); else if (y > innerHeight - 70) window.scrollBy(0, 12);
+  }
+  const order = () => [...grid().querySelectorAll(".card.topic[data-topic]:not(.dragging)")].map((c) => c.dataset.topic);
+  function finish() {
+    const { card, ph, before } = drag;
+    ph.replaceWith(card); card.removeAttribute("style"); card.classList.remove("dragging");
+    grid().classList.remove("reordering");
+    drag = null; suppressClick = true; setTimeout(() => (suppressClick = false), 80);
+    const now = order();
+    if (now.join() === before.join()) return;
+    S.topics.sort((a, b) => now.indexOf(a.slug) - now.indexOf(b.slug)); // ya se ve el nuevo orden
+    post("/api/topics/order", { slugs: now }, "PUT").catch((e) => { say("⚠ No se pudo guardar el orden: " + e.message, true); refresh(false); });
+  }
+  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } };
+
+  document.addEventListener("pointerdown", (e) => {
+    const card = e.target.closest("#groups .topics-grid > .card.topic[data-topic]");
+    if (!card || e.button > 0 || drag) return;
+    press = { card, x: e.clientX, y: e.clientY, mouse: e.pointerType === "mouse" };
+    // dedo: hay que mantener pulsado; ratón: basta con empezar a arrastrar
+    if (!press.mouse) press.timer = setTimeout(() => { if (press) { start(press.card, press.x, press.y, true); press = null; } }, 420);
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (drag) { if (!drag.touch) { e.preventDefault(); move(e.clientX, e.clientY); } return; }
+    if (!press) return;
+    const dist = Math.hypot(e.clientX - press.x, e.clientY - press.y);
+    if (press.mouse && dist > 6) { const p = press; press = null; start(p.card, p.x, p.y); move(e.clientX, e.clientY); }
+    else if (!press.mouse && dist > 10) cancelPress(); // se está desplazando la página
+  });
+  document.addEventListener("pointerup", () => { cancelPress(); if (drag) finish(); });
+  // Con el dedo, el arrastre sigue los eventos táctiles (el navegador puede cancelar los de puntero al desplazar)
+  document.addEventListener("pointercancel", () => { cancelPress(); if (drag && !drag.touch) finish(); });
+  document.addEventListener("touchmove", (e) => {
+    if (press && !press.mouse) { const t = e.touches[0]; if (Math.hypot(t.clientX - press.x, t.clientY - press.y) > 10) cancelPress(); }
+    if (!drag) return;
+    e.preventDefault(); const t = e.touches[0]; move(t.clientX, t.clientY);
+  }, { passive: false });
+  document.addEventListener("touchend", () => { cancelPress(); if (drag) finish(); });
+  document.addEventListener("contextmenu", (e) => { if (e.target.closest("#groups .card.topic")) e.preventDefault(); });
+  document.addEventListener("click", (e) => { if (suppressClick && e.target.closest("#groups")) { e.stopPropagation(); e.preventDefault(); } }, true);
+})();
+
 /* ---------- alertas plegables en móvil (cada sesión empieza desplegada) ---------- */
 $("alerts-toggle").addEventListener("click", () => {
   if (!matchMedia("(max-width: 900px)").matches) return;

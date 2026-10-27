@@ -29,7 +29,8 @@ function explainError(e: unknown): string {
 const MAX_FILE = 10 * 1024 * 1024;
 const CHUNK = 90 * 1024; // trozos pequeños: D1 limita el tamaño de cada fila y de cada consulta
 
-const today = () => new Date().toISOString().slice(0, 10);
+/** Fecha de hoy en Pekín (UTC+8, sin cambio de horario), donde vive la familia */
+const today = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
 const addDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
 function users(env: Env): User[] {
@@ -49,7 +50,7 @@ async function getTopics(env: Env, me?: string): Promise<Topic[]> {
     `SELECT t.id, t.slug, t.name, t.status_summary, t.next_step, t.email_lang, t.email_to, t.email_ref, t.owner, t.sort, t.private_to, c.color, pr.hidden
      FROM topics t LEFT JOIN topic_colors c ON c.topic_id = t.id AND c.email = ?1
      LEFT JOIN topic_prefs pr ON pr.topic_id = t.id AND pr.email = ?1
-     WHERE ?1 IS NULL OR t.private_to IS NULL OR t.private_to = ?1 ORDER BY t.sort, t.id`,
+     WHERE ?1 IS NULL OR t.private_to IS NULL OR t.private_to = ?1 ORDER BY pr.pos IS NULL, pr.pos, t.sort, t.id`,
   ).bind(me ?? null).all<Topic>();
   return results;
 }
@@ -331,6 +332,17 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   }
 
   /* --- paneles de cada tema --- */
+  // Orden de las tarjetas de temas (cada persona el suyo)
+  if (p === "/api/topics/order" && m === "PUT") {
+    const { slugs } = await body<{ slugs?: string[] }>();
+    const mine = await getTopics(env, me);
+    const ids = (slugs || []).map((s) => mine.find((t) => t.slug === s)?.id).filter((x): x is number => !!x);
+    if (!ids.length) throw new HttpError(400, "Orden vacío");
+    await env.DB.batch(ids.map((id, i) => env.DB.prepare(
+      `INSERT INTO topic_prefs (email, topic_id, pos) VALUES (?, ?, ?) ON CONFLICT (email, topic_id) DO UPDATE SET pos = excluded.pos`,
+    ).bind(me, id, i)));
+    return json({ ok: true });
+  }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/hidden$/)) && m === "PUT") {
     const t = await topicBySlug(env, mm[1], me);
     const { hidden } = await body<{ hidden?: string[] }>();

@@ -83,6 +83,10 @@ const MIGRATIONS: string[][] = [
   [
     `ALTER TABLE events ADD COLUMN tz TEXT`,
   ],
+  // 12 · orden de los temas elegido por cada persona (arrastrando las tarjetas)
+  [
+    `ALTER TABLE topic_prefs ADD COLUMN pos INTEGER`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

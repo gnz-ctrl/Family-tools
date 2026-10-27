@@ -42,8 +42,10 @@ async function askJSON<T>(env: Env, system: string, user: string, maxTokens = 15
   return JSON.parse(m[0]) as T;
 }
 
-const FAMILY = `Eres el asistente de organización de una familia que vive en Berlín (Alemania): Gonzalo y Sabrina,
-y sus hijos Valentina, Paul y Santiago. Hablan español; muchos trámites son en alemán.`;
+const FAMILY = `Eres el asistente de organización de una familia que vive en Pekín (China): Gonzalo y Sabrina,
+y sus hijos Valentina, Paul y Santiago. Hablan español. Muchos trámites los llevan desde Pekín con instituciones alemanas
+(Krankenkasse, Finanzamt, Rentenversicherung…) y los niños van a un colegio alemán, así que muchos correos son en alemán.
+Las fechas y horas, salvo que se diga otra cosa, son de Pekín.`;
 
 /* ------------------------------------------------------------------------------------------ */
 
