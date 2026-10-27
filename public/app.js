@@ -112,7 +112,23 @@ function taskEditForm(t, tag = "li") {
     <select name="assignee" aria-label="Para quién">${who.map(([v, l]) => `<option value="${v}" ${t.assignee === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
     <textarea name="notes" rows="3" placeholder="Descripción: qué hay que hacer, referencias, con quién hablar…" aria-label="Descripción">${esc(t.notes || "")}</textarea>
     <span class="actions"><button class="btn" type="submit" data-ask-on-save>Guardar y pedir ayuda</button><button class="btn light" type="submit">Guardar</button><button class="link" type="button" data-task-edit-cancel>Cerrar</button></span>
-  </form>${assistHTML(t)}</${tag}>`;
+  </form>${commentsHTML(t)}${assistHTML(t)}</${tag}>`;
+}
+const commentsOf = (id) => (S.comments || []).filter((c) => c.task_id === id);
+function commentsHTML(t) {
+  const list = commentsOf(t.id);
+  const when = (at) => { const d = new Date(at.replace(" ", "T") + "Z"); return d.toLocaleDateString("es-ES", { day: "numeric", month: "short" }) + " " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }); };
+  return `<div class="comments">
+    <h5>Comentarios</h5>
+    ${list.map((c) => `<div class="cmt ${c.author === S.me ? "mine" : ""}"><div class="cmt-meta"><b>${esc(userName(c.author))}</b> · ${esc(when(c.at))}${c.author === S.me ? `<button class="tdel" type="button" data-cmt-del="${c.id}" aria-label="Borrar comentario" title="Borrar">×</button>` : ""}</div><div class="cmt-text">${esc(c.text)}</div></div>`).join("") || `<p class="note-sim">Todavía no hay comentarios. Úsalos para organizaros: quién llama, qué falta, dudas…</p>`}
+    <form class="cmt-form" data-cmt-form="${t.id}"><input type="text" name="text" placeholder="Escribe un comentario…" aria-label="Comentario" autocomplete="off"><button class="btn light" type="submit">Enviar</button></form>
+  </div>`;
+}
+/** Marca en la lista: 💬 n, resaltado si el último comentario es del otro */
+function cmtMark(t) {
+  const list = commentsOf(t.id); if (!list.length) return "";
+  const other = list[list.length - 1].author !== S.me;
+  return `<span class="cmark ${other ? "new" : ""}" title="${other ? "Último comentario de " + esc(userName(list[list.length - 1].author)) : "Comentarios"}">💬${list.length}</span>`;
 }
 async function askClaude(id) {
   assistBusy[id] = true; renderAll();
@@ -167,7 +183,7 @@ function renderAll() {
   const done = S.tasks.filter((t) => t.status === "done").sort((a, b) => (a.completed_at < b.completed_at ? 1 : -1)).slice(0, 30);
   const row = (t) => editingTask === t.id ? taskEditForm(t) : `<li class="${t.status === "done" ? "done" : ""}">
     <input type="checkbox" id="cb-${t.id}" data-task="${t.id}" ${t.status === "done" ? "checked" : ""} aria-label="Hecha">
-    <button type="button" class="tt" data-task-edit="${t.id}" title="Abrir la tarea">${esc(t.title)}${t.ai ? `<span class="tmark" title="Claude ha sugerido qué hacer">✦</span>` : t.notes ? `<span class="tmark" title="Tiene descripción">≡</span>` : ""}</button>
+    <button type="button" class="tt" data-task-edit="${t.id}" title="Abrir la tarea">${esc(t.title)}${t.ai ? `<span class="tmark" title="Claude ha sugerido qué hacer">✦</span>` : t.notes ? `<span class="tmark" title="Tiene descripción">≡</span>` : ""}${cmtMark(t)}</button>
     <span class="tm">${esc(tName(t.topic_id))}</span>
     <span class="tw">${esc(userName(t.status === "done" ? t.completed_by : t.assignee))}</span>
     <span class="td">${t.status === "done" ? fmt(t.completed_at.slice(0, 10)) : dueBadge(t.due_date)}</span>
@@ -340,7 +356,7 @@ function renderTopic(slug) {
     <div class="full">
       ${fold("tasks-" + slug, foldTitle("Pendientes", v.open.length ? String(v.open.length) : ""), (v.open.length ? v.open.map((x) => editingTask === x.id ? taskEditForm(x, "div") : `<div class="mini-task">
           <input type="checkbox" id="tcb-${x.id}" data-task="${x.id}" aria-label="Hecha">
-          <button type="button" class="grow tt-mini" data-task-edit="${x.id}" title="Abrir la tarea"><span>${esc(x.title)}${x.ai ? `<span class="tmark">✦</span>` : x.notes ? `<span class="tmark">≡</span>` : ""}</span><span class="foot">${esc(userName(x.assignee))}</span></button>${dueBadge(x.due_date)}
+          <button type="button" class="grow tt-mini" data-task-edit="${x.id}" title="Abrir la tarea"><span>${esc(x.title)}${x.ai ? `<span class="tmark">✦</span>` : x.notes ? `<span class="tmark">≡</span>` : ""}${cmtMark(x)}</span><span class="foot">${esc(userName(x.assignee))}</span></button>${dueBadge(x.due_date)}
           ${pendingTaskDel === x.id ? `<button class="tdel on" type="button" data-task-del-ok="${x.id}">Borrar</button>` : `<button class="tdel" type="button" data-task-del="${x.id}" aria-label="Borrar tarea">×</button>`}</div>`).join("") : empty("No hay nada pendiente en este tema."))
         + `<form class="item-form" id="add-task"><input type="text" id="at-title" placeholder="Nueva tarea" aria-label="Nueva tarea"><input type="date" id="at-due" aria-label="Fecha límite"><button class="btn light" type="submit">Añadir</button></form>`, true)}
       ${mailsHTML(v.mails)}
@@ -841,6 +857,16 @@ document.addEventListener("change", (e) => {
   // «quién va» también decide si entra en el calendario compartido (.ics)
   const v = e.target.value;
   act(() => post(`/api/events/${id}`, { attendee: v, in_calendar: v === "g" || v === "s" || v === "b" }));
+});
+document.addEventListener("submit", (e) => {
+  const f = e.target.closest("[data-cmt-form]"); if (!f) return;
+  e.preventDefault(); const text = f.elements.text.value.trim(); if (!text) return;
+  f.elements.text.value = "";
+  act(() => post(`/api/tasks/${f.dataset.cmtForm}/comments`, { text }), "Comentario enviado.").catch(() => { f.elements.text.value = text; });
+});
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cmt-del]"); if (!b) return;
+  act(() => post(`/api/comments/${b.dataset.cmtDel}`, {}, "DELETE"), "Comentario borrado.");
 });
 document.addEventListener("submit", (e) => {
   const f = e.target.closest("[data-ev-form]"); if (!f) return;

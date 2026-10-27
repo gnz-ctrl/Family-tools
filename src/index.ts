@@ -120,7 +120,7 @@ const nameOf = (env: Env, email: string) => users(env).find((u) => u.email === e
 
 /** Todo lo que necesita la web, en una sola llamada. */
 async function state(env: Env, me: string) {
-  const [topics, items, history, tasks, mails, events, expenses, cal, files, panels, credit] = await Promise.all([
+  const [topics, items, history, tasks, mails, events, expenses, cal, files, panels, credit, comments] = await Promise.all([
     getTopics(env, me),
     env.DB.prepare(`SELECT id, topic_id, kind, label, value, extra FROM topic_items WHERE ${VISIBLE} ORDER BY sort, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history WHERE ${VISIBLE} ORDER BY at DESC, id DESC`).bind(me).all(),
@@ -132,12 +132,13 @@ async function state(env: Env, me: string) {
     env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
     env.DB.prepare(`SELECT id, topic_id, title, body FROM topic_panels WHERE ${VISIBLE} ORDER BY sort, id`).bind(me).all(),
     apiCredit(env),
+    env.DB.prepare(`SELECT id, task_id, author, text, at FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE ${VISIBLE}) ORDER BY at, id`).bind(me).all(),
   ]);
   return {
     me, today: today(), users: users(env), topics,
     items: items.results, history: history.results, tasks: tasks.results,
     mails: mails.results, events: events.results, expenses: expenses.results,
-    files: files.results, panels: panels.results, credit,
+    files: files.results, panels: panels.results, credit, comments: comments.results,
     calPath: cal ? `/cal/${cal.v}.ics` : null,
   };
 }
@@ -393,6 +394,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     if (t.slug === "documentos") throw new HttpError(400, "Documentos compartidos no se puede borrar");
     await env.DB.batch([
       // en un tema privado las tareas se borran (si no, pasarían a verse por los dos)
+      ...(t.private_to ? [env.DB.prepare(`DELETE FROM task_comments WHERE task_id IN (SELECT id FROM tasks WHERE topic_id = ?)`).bind(t.id)] : []),
       env.DB.prepare(t.private_to ? `DELETE FROM tasks WHERE topic_id = ?` : `UPDATE tasks SET topic_id = NULL WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM topic_colors WHERE topic_id = ?`).bind(t.id),
       env.DB.prepare(`DELETE FROM topic_prefs WHERE topic_id = ?`).bind(t.id),
@@ -519,8 +521,24 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
     }
     return json({ ok: true });
   }
+  // Comentarios de una tarea
+  if ((mm = p.match(/^\/api\/tasks\/(\d+)\/comments$/)) && m === "POST") {
+    await guard(env, "tasks", mm[1], me);
+    const { text } = await body<{ text?: string }>();
+    if (!text?.trim()) throw new HttpError(400, "El comentario está vacío");
+    await env.DB.prepare(`INSERT INTO task_comments (task_id, author, text) VALUES (?, ?, ?)`).bind(Number(mm[1]), me, text.trim().slice(0, 2000)).run();
+    return json({ ok: true });
+  }
+  if ((mm = p.match(/^\/api\/comments\/(\d+)$/)) && m === "DELETE") {
+    const c = await env.DB.prepare(`SELECT author FROM task_comments WHERE id = ?`).bind(Number(mm[1])).first<{ author: string }>();
+    if (!c) throw new HttpError(404, "Ese comentario ya no existe");
+    if (c.author !== me) throw new HttpError(403, "Solo puedes borrar tus comentarios");
+    await env.DB.prepare(`DELETE FROM task_comments WHERE id = ?`).bind(Number(mm[1])).run();
+    return json({ ok: true });
+  }
   if ((mm = p.match(/^\/api\/tasks\/(\d+)$/)) && m === "DELETE") {
     await guard(env, "tasks", mm[1], me);
+    await env.DB.prepare(`DELETE FROM task_comments WHERE task_id = ?`).bind(Number(mm[1])).run();
     await env.DB.prepare(`DELETE FROM tasks WHERE id = ?`).bind(mm[1]).run();
     return json({ ok: true });
   }

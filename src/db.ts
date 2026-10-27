@@ -74,6 +74,11 @@ const MIGRATIONS: string[][] = [
     `ALTER TABLE events ADD COLUMN seq INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE events ADD COLUMN rsvp TEXT`,
   ],
+  // 10 · comentarios en las tareas, para organizarse entre los dos
+  [
+    `CREATE TABLE IF NOT EXISTS task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id), author TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL DEFAULT (datetime('now')))`,
+    `CREATE INDEX IF NOT EXISTS idx_task_comments ON task_comments(task_id)`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

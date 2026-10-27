@@ -580,3 +580,26 @@ details.past[open] > summary { margin-bottom: 8px; }
   .ev-row .link { flex: none; font-size: .84rem; }
   .ev-card { padding: 7px 9px; }
 }
+
+/* Comentarios de tareas */
+.comments { display: grid; gap: 6px; margin: 4px 0 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg); min-width: 0; }
+.comments h5 { margin: 0; font-size: .72rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.cmt { display: grid; gap: 2px; padding: 6px 10px; border-radius: 10px; background: var(--card); max-width: 92%; justify-self: start; min-width: 0; }
+.cmt.mine { justify-self: end; background: var(--accent-soft); }
+.cmt-meta { display: flex; align-items: center; gap: 6px; font-size: .74rem; color: var(--muted); }
+.cmt-meta .tdel { width: 18px; height: 18px; font-size: .8rem; margin-left: auto; }
+.cmt-text { font-size: .9rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmt-form { display: flex; gap: 6px; }
+.cmt-form input { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--fg); }
+.cmark { margin-left: 6px; font-size: .74rem; color: var(--muted); }
+.cmark.new { color: var(--info); font-weight: 700; }
+
+/* Móvil: nada se sale de las cajas de eventos */
+.ev-card > *, .ev-row > * { min-width: 0; }
+@media (max-width: 640px) {
+  .ev-row { flex-wrap: wrap; }
+  .ev-row select { flex: 1 1 140px; }
+  .ev-row .note-sim { flex-basis: 100%; }
+  .ev-row .btn { white-space: normal; }
+  .ev-row .link.danger { white-space: normal; text-align: left; }
+}
