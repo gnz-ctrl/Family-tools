@@ -4,7 +4,7 @@ import { inviteMime } from "./mail";
 import { allowedSenders, getUser } from "./auth";
 import { analyzeMail, assistTask, classify, draftEmail, reviseEmail } from "./claude";
 import { ensureSchema, resetDemo } from "./db";
-import { buildIcs, buildInvite, type CalEvent } from "./ics";
+import { buildIcs, buildInvite, DEFAULT_TZ, TZS, type CalEvent } from "./ics";
 import type { Env, Topic, User } from "./types";
 
 const json = (data: unknown, status = 200) =>
@@ -90,9 +90,12 @@ async function apiCredit(env: Env) {
 }
 
 /* ---------- invitaciones de calendario por email ---------- */
+const TZ_CITY: Record<string, string> = { "Asia/Shanghai": "Pekín", "Europe/Berlin": "Berlín", "Europe/Madrid": "Madrid", "Europe/London": "Londres", "America/New_York": "Nueva York" };
+/** Solo zonas conocidas; la predeterminada (Pekín) se guarda como null */
+const cleanTz = (tz?: string | null) => (tz && TZS[tz] && tz !== DEFAULT_TZ ? tz : null);
 type EvRow = CalEvent & { topic_id: number | null; invited: string | null };
 const loadEvent = (env: Env, id: number) => env.DB.prepare(
-  `SELECT e.id, e.topic_id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, e.invited, e.seq, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.id = ?`,
+  `SELECT e.id, e.topic_id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, e.invited, e.seq, e.tz, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.id = ?`,
 ).bind(id).first<EvRow>();
 /** "g" → Gonzalo, "s" → Sabrina (por la inicial del nombre), "b" → los dos */
 function recipients(env: Env, who: string): User[] {
@@ -106,11 +109,12 @@ async function sendInvite(env: Env, ev: CalEvent, method: "REQUEST" | "CANCEL", 
   const ics = buildInvite(ev, method, { email: from, name: "Family Hub" }, to);
   const fecha = new Date(ev.date + "T12:00:00Z").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
   const hora = (ev.time || "").match(/\d{1,2}:\d{2}(?:\s*[–-]\s*\d{1,2}:\d{2})?/)?.[0] || ""; // solo la hora, sin comentarios
-  const linea = `${ev.title} · ${fecha}${ev.time ? `, ${ev.time}` : ""}${ev.place ? ` · ${ev.place}` : ""}`;
-  const subject = method === "CANCEL" ? `Cancelado: ${ev.title}` : `${update ? "Cambio" : "Invitación"}: ${ev.title} · ${fecha}${hora ? `, ${hora}` : ""}`;
+  const linea = `${ev.title} · ${fecha}${ev.time ? `, ${ev.time} (hora de ${TZ_CITY[ev.tz && TZS[ev.tz] ? ev.tz : DEFAULT_TZ]})` : ""}${ev.place ? ` · ${ev.place}` : ""}`;
+  const city = TZ_CITY[ev.tz && TZS[ev.tz] ? ev.tz : DEFAULT_TZ];
+  const subject = method === "CANCEL" ? `Cancelado: ${ev.title}` : `${update ? "Cambio" : "Invitación"}: ${ev.title} · ${fecha}${hora ? `, ${hora} (hora de ${city})` : ""}`;
   const intro = method === "CANCEL" ? `${fromName} ha cancelado este evento:` : update ? `${fromName} ha cambiado este evento:` : `${fromName} te invita a:`;
   const text = `${intro}\n\n${linea}${ev.note ? `\n${ev.note}` : ""}\n\n${method === "CANCEL" ? "Si ya estaba en tu calendario, se quitará al abrir este correo." : "Ábrelo en tu calendario o responde Sí / No desde la tarjeta del evento."}\n\n— Family Hub · sbkperez.me`;
-  const html = `<!doctype html><html lang="es"><body><p>${esc(intro)}</p><p style="font-size:16px"><b>${esc(ev.title)}</b><br>${esc(fecha)}${ev.time ? `, ${esc(ev.time)}` : ""}${ev.place ? `<br>${esc(ev.place)}` : ""}${ev.note ? `<br><i>${esc(ev.note)}</i>` : ""}</p><p style="color:#5b6672">— Family Hub · <a href="https://sbkperez.me">sbkperez.me</a></p></body></html>`;
+  const html = `<!doctype html><html lang="es"><body><p>${esc(intro)}</p><p style="font-size:16px"><b>${esc(ev.title)}</b><br>${esc(fecha)}${ev.time ? `, ${esc(ev.time)} (hora de ${esc(TZ_CITY[ev.tz && TZS[ev.tz] ? ev.tz : DEFAULT_TZ])})` : ""}${ev.place ? `<br>${esc(ev.place)}` : ""}${ev.note ? `<br><i>${esc(ev.note)}</i>` : ""}</p><p style="color:#5b6672">— Family Hub · <a href="https://sbkperez.me">sbkperez.me</a></p></body></html>`;
   if (env.DEV_MODE === "true" || !env.EMAIL) { console.log(`[email simulado] ${subject} → ${to.map((u) => u.email).join(", ")}\n${ics}`); return; }
   // Un email por persona, con el .ics dentro del cuerpo (como hacen Google y Outlook) para que salga la tarjeta Sí / No
   for (const u of to) {
@@ -129,7 +133,7 @@ async function state(env: Env, me: string) {
     env.DB.prepare(`SELECT id, topic_id, at, text, source FROM history WHERE ${VISIBLE} ORDER BY at DESC, id DESC`).bind(me).all(),
     env.DB.prepare(`SELECT id, title, notes, topic_id, assignee, due_date, status, source, created_at, completed_at, completed_by, ai FROM tasks WHERE ${VISIBLE} ORDER BY id`).bind(me).all(),
     env.DB.prepare(`SELECT id, topic_id, from_name, from_addr, subject, lang, received_at, intent, todo, due, state, forwarded_by FROM mails WHERE state != 'archived' AND ${VISIBLE} ORDER BY received_at DESC, id DESC`).bind(me).all(),
-    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar, invited, rsvp, seq FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
+    env.DB.prepare(`SELECT id, topic_id, mail_id, title, date, time, who, place, note, attendee, in_calendar, invited, rsvp, seq, tz FROM events WHERE ${VISIBLE} ORDER BY date, id`).bind(me).all(),
     env.DB.prepare(`SELECT id, name, cat, amount, cycle, next, notice, sub, flag FROM expenses ORDER BY id`).all(),
     env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>(),
     env.DB.prepare(`SELECT id, name, type, size, uploaded_by, created_at FROM files ORDER BY created_at DESC, id DESC`).all(),
@@ -162,8 +166,8 @@ async function ingest(env: Env, opts: { text: string; sender: string; source: "w
     await env.DB.prepare(`UPDATE topics SET status_summary = ?, updated_at = datetime('now') WHERE id = ?`).bind(r.topic_status_update, topic.id).run();
   }
   if (r.kind === "event" && r.due_date) {
-    await env.DB.prepare(`INSERT INTO events (topic_id, title, date, time, place, note) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(topic?.id ?? null, r.title, r.due_date, r.event_time || null, r.place || null, r.notes || null).run();
+    await env.DB.prepare(`INSERT INTO events (topic_id, title, date, time, place, note, tz) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(topic?.id ?? null, r.title, r.due_date, r.event_time || null, r.place || null, r.notes || null, cleanTz(r.tz)).run();
   } else if (r.kind === "task" || r.kind === "event") {
     await env.DB.prepare(`INSERT INTO tasks (title, notes, topic_id, assignee, due_date, source, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .bind(r.title, r.notes ?? null, topic?.id ?? null, r.assignee || opts.sender, r.due_date || null, opts.source, opts.sender).run();
@@ -184,8 +188,8 @@ async function ingestMail(env: Env, opts: { subject: string; text: string; forwa
     a.intent || null, a.todo || null, a.due || null, opts.text.slice(0, 20000), opts.forwardedBy).first<{ id: number }>();
   for (const ev of a.events ?? []) {
     if (!ev.title || !/^\d{4}-\d{2}-\d{2}$/.test(ev.date || "")) continue;
-    await env.DB.prepare(`INSERT INTO events (topic_id, mail_id, title, date, time, who, place, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(topic?.id ?? null, row?.id ?? null, ev.title, ev.date, ev.time || null, ev.who || null, ev.place || null, ev.note || null).run();
+    await env.DB.prepare(`INSERT INTO events (topic_id, mail_id, title, date, time, who, place, note, tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(topic?.id ?? null, row?.id ?? null, ev.title, ev.date, ev.time || null, ev.who || null, ev.place || null, ev.note || null, cleanTz(ev.tz)).run();
   }
   if (topic) await addHistory(env, topic.id, `Correo recibido de ${a.from_name}: ${a.subject || opts.subject}`, "email");
   return a;
@@ -439,10 +443,10 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   }
   if ((mm = p.match(/^\/api\/topics\/([\w-]+)\/events$/)) && m === "POST") {
     const t = await topicBySlug(env, mm[1], me);
-    const e = await body<{ title?: string; date?: string; time?: string; place?: string; who?: string; note?: string }>();
+    const e = await body<{ title?: string; date?: string; time?: string; place?: string; who?: string; note?: string; tz?: string }>();
     if (!e.title?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(e.date || "")) throw new HttpError(400, "Escribe el nombre y la fecha del evento");
-    await env.DB.prepare(`INSERT INTO events (topic_id, title, date, time, place, who, note) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .bind(t.id, e.title.trim(), e.date, e.time?.trim() || null, e.place?.trim() || null, e.who?.trim() || null, e.note?.trim() || null).run();
+    await env.DB.prepare(`INSERT INTO events (topic_id, title, date, time, place, who, note, tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(t.id, e.title.trim(), e.date, e.time?.trim() || null, e.place?.trim() || null, e.who?.trim() || null, e.note?.trim() || null, cleanTz(e.tz)).run();
     return json({ ok: true });
   }
   if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "DELETE") {
@@ -459,7 +463,7 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
   // Editar un evento; si ya había invitados, les llega el cambio
   if ((mm = p.match(/^\/api\/events\/(\d+)$/)) && m === "PATCH") {
     await guard(env, "events", mm[1], me);
-    const b = await body<{ title?: string; date?: string; time?: string; place?: string; note?: string }>();
+    const b = await body<{ title?: string; date?: string; time?: string; place?: string; note?: string; tz?: string }>();
     if (b.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(b.date)) throw new HttpError(400, "Fecha no válida");
     const old = await loadEvent(env, Number(mm[1]));
     if (!old) throw new HttpError(404, "Ese evento ya no existe");
@@ -467,9 +471,10 @@ async function handleApi(req: Request, env: Env, me: string): Promise<Response> 
       title: b.title?.trim() || old.title, date: b.date || old.date,
       time: b.time !== undefined ? b.time.trim() || null : old.time, place: b.place !== undefined ? b.place.trim() || null : old.place,
       note: b.note !== undefined ? b.note.trim() || null : old.note,
+      tz: b.tz !== undefined ? cleanTz(b.tz) : old.tz ?? null,
     };
-    await env.DB.prepare(`UPDATE events SET title = ?, date = ?, time = ?, place = ?, note = ?, seq = seq + 1 WHERE id = ?`)
-      .bind(nv.title, nv.date, nv.time, nv.place, nv.note, old.id).run();
+    await env.DB.prepare(`UPDATE events SET title = ?, date = ?, time = ?, place = ?, note = ?, tz = ?, seq = seq + 1 WHERE id = ?`)
+      .bind(nv.title, nv.date, nv.time, nv.place, nv.note, nv.tz, old.id).run();
     const invited: string[] = old.invited ? JSON.parse(old.invited) : [];
     if (invited.length) await sendInvite(env, { ...old, ...nv, seq: (old.seq ?? 0) + 1 }, "REQUEST", users(env).filter((u) => invited.includes(u.email)), nameOf(env, me), true);
     return json({ ok: true, updated: invited.length });
@@ -641,7 +646,7 @@ export default {
         await ensureSchema(env);
         const tok = await env.DB.prepare(`SELECT v FROM settings WHERE k = 'cal_token'`).first<{ v: string }>();
         if (!tok || tok.v !== cal[1]) return new Response("No encontrado", { status: 404 });
-        const { results } = await env.DB.prepare(`SELECT e.id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.in_calendar = 1 AND t.private_to IS NULL ORDER BY e.date`).all();
+        const { results } = await env.DB.prepare(`SELECT e.id, e.title, e.date, e.time, e.place, e.note, e.who, e.attendee, e.tz, t.name AS topic FROM events e LEFT JOIN topics t ON t.id = e.topic_id WHERE e.in_calendar = 1 AND t.private_to IS NULL ORDER BY e.date`).all();
         return new Response(buildIcs(results as never, users(env)), { headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "no-store" } });
       }
 

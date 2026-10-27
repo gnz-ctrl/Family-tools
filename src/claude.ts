@@ -58,7 +58,7 @@ export async function classify(
 Recibes entradas breves y las colocas en su sitio. Hoy es ${input.today}. Usuarios: ${input.users.join(", ")}. Quien envía: ${input.sender}.
 Temas disponibles:
 ${topicList}
-Devuelve: {"kind":"task"|"note"|"event","title":"...","notes":"...","topic_slug":"...","assignee":"email|both","due_date":"YYYY-MM-DD","event_time":"HH:MM o texto","place":"...","topic_status_update":"..."}
+Devuelve: {"kind":"task"|"note"|"event","title":"...","notes":"...","topic_slug":"...","assignee":"email|both","due_date":"YYYY-MM-DD","event_time":"HH:MM","place":"...","tz":"zona IANA del lugar","topic_status_update":"..."}
 Reglas:
 - Si es una cita o celebración con fecha (cumpleaños, comida familiar, reunión, visita), kind="event" con due_date = fecha del evento (y event_time/place si se dicen). Los cumpleaños y reuniones de familia van al tema "eventos" si existe.
 - Si pide hacer algo, kind="task". Si es solo información, kind="note".
@@ -85,12 +85,12 @@ Devuelve:
  "subject":"asunto original","lang":"idioma del correo en español (Alemán, Inglés, Español...)",
  "intent":"qué quieren o qué comunican, 1-2 frases claras en español",
  "todo":"qué tiene que hacer la familia, concreto, en español","due":"YYYY-MM-DD o null",
- "events":[{"title":"en español, con el término original entre paréntesis si es útil","date":"YYYY-MM-DD","time":"solo HH:MM o HH:MM–HH:MM (hora de Berlín), o vacío","who":"a qué hijo/clase afecta","place":"...","note":"qué llevar o preparar"}]}
+ "events":[{"title":"en español, con el término original entre paréntesis si es útil","date":"YYYY-MM-DD","time":"solo HH:MM o HH:MM–HH:MM, hora local del lugar del evento, o vacío","tz":"zona horaria IANA del lugar del evento","who":"a qué hijo/clase afecta","place":"...","note":"qué llevar o preparar"}]}
 Reglas:
 - events: solo citas con fecha concreta (reuniones, excursiones, fiestas, días sin clase...). Si no hay, [].
 - due: el plazo más cercano para actuar (o la fecha del primer evento si hay que decidir algo).
 - Fechas sin año: el año que haga que la fecha sea futura respecto a hoy.
-- La familia vive en Berlín: las horas del correo son hora de Berlín. Si el texto reenviado muestra otra zona horaria (p. ej. porque se leyó desde el extranjero), conviértela a hora de Berlín.
+- La hora es siempre la hora local del lugar donde ocurre el evento, tal como la indica el remitente. "tz" es la zona de ese lugar: Asia/Shanghai (Pekín y China, la mayoría de los casos), Europe/Berlin (Alemania), Europe/Madrid (España), Europe/London o America/New_York. Si no se puede saber, Asia/Shanghai.
 - En "time" pon solo la hora; duraciones, dudas o comentarios van en "note".
 - No inventes datos.`, `Asunto: ${input.subject}\n\n${input.text.slice(0, 12000)}`, 2000);
 }

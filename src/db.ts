@@ -79,6 +79,10 @@ const MIGRATIONS: string[][] = [
     `CREATE TABLE IF NOT EXISTS task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id), author TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL DEFAULT (datetime('now')))`,
     `CREATE INDEX IF NOT EXISTS idx_task_comments ON task_comments(task_id)`,
   ],
+  // 11 · zona horaria del lugar de cada evento (null = Pekín)
+  [
+    `ALTER TABLE events ADD COLUMN tz TEXT`,
+  ],
 ];
 
 let ready: Promise<void> | null = null;

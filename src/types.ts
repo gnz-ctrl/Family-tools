@@ -55,6 +55,7 @@ export interface Classification {
   /** Solo para kind="event" */
   event_time?: string;
   place?: string;
+  tz?: string;
 }
 
 /** Lo que Claude devuelve al analizar un correo reenviado a inbox@ */
@@ -67,7 +68,7 @@ export interface MailAnalysis {
   intent: string; // qué quieren, en español
   todo: string; // qué hay que hacer, en español
   due?: string | null; // YYYY-MM-DD
-  events?: Array<{ title: string; date: string; time?: string; who?: string; place?: string; note?: string }>;
+  events?: Array<{ title: string; date: string; time?: string; who?: string; place?: string; note?: string; tz?: string }>;
 }
 
 /** Ayuda de Claude para una tarea */

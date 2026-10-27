@@ -525,6 +525,10 @@ function personOf(ev) {
   return "";
 }
 const RSVP = { ACCEPTED: "aceptó", DECLINED: "no va", TENTATIVE: "quizás" };
+const TZ_CITY = { "Asia/Shanghai": "Pekín", "Europe/Berlin": "Berlín", "Europe/Madrid": "Madrid", "Europe/London": "Londres", "America/New_York": "Nueva York" };
+const DEFAULT_TZ = "Asia/Shanghai";
+/** Hora con la ciudad de su zona horaria: «13:45 (Pekín)» */
+const evTime = (ev) => ev.time ? `${ev.time} (${TZ_CITY[ev.tz] || TZ_CITY[DEFAULT_TZ]})` : "";
 const openEv = new Set(); // eventos ya invitados que se han desplegado a mano
 function eventCard(ev, opts = {}) {
   const p = personOf(ev), inv = parseJ(ev.invited, []), rsvp = parseJ(ev.rsvp, {});
@@ -534,7 +538,7 @@ function eventCard(ev, opts = {}) {
     const answers = inv.map((e) => rsvp[e]).filter(Boolean);
     return `<button type="button" class="ev-mini p-${p || "x"}" data-ev-expand="${ev.id}" title="Mostrar detalles">
       <span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b>
-      <span class="ev-mini-when">${opts.noDate ? "" : esc(fmt(ev.date)) + (ev.time ? " · " : "")}${ev.time ? esc(ev.time) : ""}</span>
+      <span class="ev-mini-when">${opts.noDate ? "" : esc(fmt(ev.date)) + (ev.time ? " · " : "")}${esc(evTime(ev))}</span>
       <span class="ev-mini-st">✉${answers.includes("ACCEPTED") ? " ✓" : answers.includes("DECLINED") ? " ✗" : ""}</span><span class="chev" aria-hidden="true">▾</span></button>`;
   }
   const invLine = inv.length ? `<div class="ev-inv">✉ Invitación enviada a ${inv.map((e) => `${esc(userName(e))}${rsvp[e] ? ` (${RSVP[rsvp[e]] || rsvp[e].toLowerCase()})` : ""}`).join(" · ")}</div>` : "";
@@ -543,12 +547,13 @@ function eventCard(ev, opts = {}) {
       <input type="date" name="date" value="${ev.date}" aria-label="Fecha">
       <input type="text" name="time" value="${esc(ev.time || "")}" placeholder="Hora (19:00 o 19:00–20:30)" aria-label="Hora">
       <input type="text" name="place" value="${esc(ev.place || "")}" placeholder="Lugar" aria-label="Lugar">
+      <select name="tz" aria-label="Zona horaria del lugar">${Object.entries(TZ_CITY).map(([k, c]) => `<option value="${k}" ${(ev.tz || DEFAULT_TZ) === k ? "selected" : ""}>Hora de ${c}</option>`).join("")}</select>
       <span class="actions"><button class="btn" type="submit">Guardar${inv.length ? " y avisar" : ""}</button><button class="link" type="button" data-ev-edit-cancel>Cancelar</button></span>
     </form></div>`;
   const def = ["g", "s", "b"].includes(ev.attendee) ? ev.attendee : "b";
   return `<div class="ev-card p-${p || "x"}">
     <div class="ev-head"><span class="pchip p-${p || "x"}" aria-hidden="true"></span><b>${esc(ev.title)}</b>${inv.length ? `<button type="button" class="ev-fold" data-ev-collapse="${ev.id}" aria-label="Plegar" title="Plegar">▴</button>` : ""}</div>
-    <div class="ev-sub">${opts.noDate ? "" : esc(fmtLong(ev.date)) + (ev.time ? " · " : "")}${ev.time ? esc(ev.time) : ""}${ev.place ? ` · ${esc(ev.place)}` : ""}${ev.who ? ` · ${esc(ev.who)}` : ""}${opts.showTopic && topic ? ` · <button class="link-plain" type="button" data-topic-open="${topic.slug}">${esc(topic.name)}</button>` : ""}</div>
+    <div class="ev-sub">${opts.noDate ? "" : esc(fmtLong(ev.date)) + (ev.time ? " · " : "")}${esc(evTime(ev))}${ev.place ? ` · ${esc(ev.place)}` : ""}${ev.who ? ` · ${esc(ev.who)}` : ""}${opts.showTopic && topic ? ` · <button class="link-plain" type="button" data-topic-open="${topic.slug}">${esc(topic.name)}</button>` : ""}</div>
     ${ev.note ? `<div class="ev-note">${esc(ev.note)}</div>` : ""}
     ${invLine}
     ${invitingEv === ev.id
@@ -913,7 +918,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("submit", (e) => {
   const f = e.target.closest("[data-ev-form]"); if (!f) return;
   e.preventDefault(); const id = f.dataset.evForm; editingEv = null;
-  act(() => post(`/api/events/${id}`, { title: f.elements.title.value, date: f.elements.date.value, time: f.elements.time.value, place: f.elements.place.value }, "PATCH"),
+  act(() => post(`/api/events/${id}`, { title: f.elements.title.value, date: f.elements.date.value, time: f.elements.time.value, place: f.elements.place.value, tz: f.elements.tz.value }, "PATCH"),
     (r) => r.updated ? "Evento cambiado y aviso enviado a los invitados." : "Evento cambiado.").catch(() => {});
 });
 document.addEventListener("click", (e) => {

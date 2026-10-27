@@ -3,6 +3,8 @@ import type { User } from "./types";
 export interface CalEvent {
   id: number; title: string; date: string; time: string | null; place: string | null; note: string | null;
   who: string | null; attendee: string | null; topic: string | null; seq?: number | null;
+  /** Zona horaria IANA del lugar del evento (null = la predeterminada) */
+  tz?: string | null;
 }
 
 const ATTEND: Record<string, string> = { g: "Va Gonzalo", s: "Va Sabrina", b: "Vais los dos", n: "No hace falta ir" };
@@ -24,12 +26,26 @@ function fold(line: string): string {
 const ymd = (d: string) => d.replace(/-/g, "");
 const stamp = () => new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 
-const VTIMEZONE = [
-  "BEGIN:VTIMEZONE", "TZID:Europe/Berlin",
-  "BEGIN:DAYLIGHT", "TZOFFSETFROM:+0100", "TZOFFSETTO:+0200", "TZNAME:CEST", "DTSTART:19700329T020000", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT",
-  "BEGIN:STANDARD", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0100", "TZNAME:CET", "DTSTART:19701025T030000", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD",
-  "END:VTIMEZONE",
+/** Zonas horarias admitidas (definición iCalendar de cada una) */
+const STD = (from: string, to: string, name: string, start: string, rule: string) => ["BEGIN:STANDARD", `TZOFFSETFROM:${from}`, `TZOFFSETTO:${to}`, `TZNAME:${name}`, `DTSTART:${start}`, ...(rule ? [`RRULE:${rule}`] : []), "END:STANDARD"];
+const DST = (from: string, to: string, name: string, start: string, rule: string) => ["BEGIN:DAYLIGHT", `TZOFFSETFROM:${from}`, `TZOFFSETTO:${to}`, `TZNAME:${name}`, `DTSTART:${start}`, `RRULE:${rule}`, "END:DAYLIGHT"];
+const EU = (std: string, dst: string, n1: string, n2: string, h: string) => [
+  ...DST(std, dst, n2, `19700329T${h}0000`, "FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU"),
+  ...STD(dst, std, n1, `19701025T${String(+h + 1).padStart(2, "0")}0000`, "FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"),
 ];
+export const TZS: Record<string, string[]> = {
+  "Asia/Shanghai": STD("+0800", "+0800", "CST", "19700101T000000", ""),
+  "Europe/Berlin": EU("+0100", "+0200", "CET", "CEST", "02"),
+  "Europe/Madrid": EU("+0100", "+0200", "CET", "CEST", "02"),
+  "Europe/London": EU("+0000", "+0100", "GMT", "BST", "01"),
+  "America/New_York": [
+    ...DST("-0500", "-0400", "EDT", "19700308T020000", "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU"),
+    ...STD("-0400", "-0500", "EST", "19701101T020000", "FREQ=YEARLY;BYMONTH=11;BYDAY=1SU"),
+  ],
+};
+export const DEFAULT_TZ = "Asia/Shanghai";
+const tzOf = (e: CalEvent) => (e.tz && TZS[e.tz] ? e.tz : DEFAULT_TZ);
+const vtimezones = (ids: string[]) => [...new Set(ids)].flatMap((id) => ["BEGIN:VTIMEZONE", `TZID:${id}`, ...TZS[id], "END:VTIMEZONE"]);
 
 /** Fecha y hora del evento ("19:00", "19:00–20:30" o sin hora = día entero). */
 function when(e: CalEvent): string[] {
@@ -38,7 +54,7 @@ function when(e: CalEvent): string[] {
     const start = `${ymd(e.date)}T${t[1].padStart(2, "0")}${t[2]}00`;
     const endH = t[3] ? t[3].padStart(2, "0") : String(Math.min(23, +t[1] + 1)).padStart(2, "0");
     const end = `${ymd(e.date)}T${endH}${t[4] ?? t[2]}00`;
-    return [`DTSTART;TZID=Europe/Berlin:${start}`, `DTEND;TZID=Europe/Berlin:${end}`];
+    return [`DTSTART;TZID=${tzOf(e)}:${start}`, `DTEND;TZID=${tzOf(e)}:${end}`];
   }
   const next = new Date(e.date + "T12:00:00Z"); next.setUTCDate(next.getUTCDate() + 1);
   return [`DTSTART;VALUE=DATE:${ymd(e.date)}`, `DTEND;VALUE=DATE:${ymd(next.toISOString().slice(0, 10))}`];
@@ -58,8 +74,8 @@ export function buildIcs(events: CalEvent[], _users: User[]): string {
   const now = stamp();
   const lines = [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//sbkperez.me//Family Hub//ES", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
-    "X-WR-CALNAME:Family Hub", "X-WR-TIMEZONE:Europe/Berlin", "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H",
-    ...VTIMEZONE,
+    "X-WR-CALNAME:Family Hub", "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H",
+    ...vtimezones(events.map(tzOf)),
   ];
   for (const e of events) {
     const who = e.attendee ? ATTEND[e.attendee] : "";
@@ -77,7 +93,7 @@ export function buildIcs(events: CalEvent[], _users: User[]): string {
 export function buildInvite(e: CalEvent, method: "REQUEST" | "CANCEL", organizer: { email: string; name: string }, attendees: User[]): string {
   const lines = [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//sbkperez.me//Family Hub//ES", "CALSCALE:GREGORIAN", `METHOD:${method}`,
-    ...VTIMEZONE,
+    ...vtimezones([tzOf(e)]),
     "BEGIN:VEVENT", uid(e), `DTSTAMP:${stamp()}`, `SEQUENCE:${e.seq ?? 0}`, ...when(e), ...details(e),
     `ORGANIZER;CN=${esc(organizer.name)}:mailto:${organizer.email}`,
     ...attendees.map((a) => `ATTENDEE;CN=${esc(a.name)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:${a.email}`),
